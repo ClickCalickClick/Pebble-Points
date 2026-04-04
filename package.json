@@ -1,0 +1,45 @@
+{
+  "name": "Pebble Points",
+  "author": "MakeAwesomeHappen",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "pebble": {
+    "displayName": "Pebble Points",
+    "uuid": "4f491959-7710-4018-adfd-c77a595bd53a",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "capabilities": [
+      "configurable"
+    ],
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "playerCount",
+      "player1Name",
+      "player2Name",
+      "player3Name",
+      "player4Name",
+      "enableConfetti",
+      "enableHaptics"
+    ],
+    "resources": {
+      "media": []
+    }
+  },
+  "dependencies": {
+    "@rebble/clay": "^1.0.8"
+  }
+}

@@ -1,0 +1,47 @@
+{
+    "displayName": "Pebble Points",
+    "uuid": "4f491959-7710-4018-adfd-c77a595bd53a",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "capabilities": [
+        "configurable"
+    ],
+    "targetPlatforms": [
+        "aplite",
+        "basalt",
+        "chalk",
+        "diorite",
+        "emery",
+        "flint",
+        "gabbro"
+    ],
+    "watchapp": {
+        "watchface": false
+    },
+    "messageKeys": {
+        "playerCount": 10000,
+        "player1Name": 10001,
+        "player2Name": 10002,
+        "player3Name": 10003,
+        "player4Name": 10004,
+        "enableConfetti": 10005,
+        "enableHaptics": 10006
+    },
+    "resources": {
+        "media": []
+    },
+    "name": "Pebble Points",
+    "shortName": "Pebble Points",
+    "longName": "Pebble Points",
+    "versionLabel": "1.0",
+    "companyName": "MakeAwesomeHappen",
+    "appKeys": {
+        "playerCount": 10000,
+        "player1Name": 10001,
+        "player2Name": 10002,
+        "player3Name": 10003,
+        "player4Name": 10004,
+        "enableConfetti": 10005,
+        "enableHaptics": 10006
+    }
+}

@@ -1,0 +1,478 @@
+# Friction Log - Pebble Points Project
+
+## Overview
+Live incident tracking and reference library for mistakes, learnings, and solutions.
+Check this before starting each task to avoid repeated issues.
+
+---
+
+## Active Friction Log
+*Current incidents requiring identification, documentation, and resolution.*
+
+*(No active incidents)*
+
+---
+
+## Resolved Friction Index
+*Historical record of resolved incidents and their fixes.*
+
+### R-019: HD Device Typography Upsize Risk On Emery/Gabbro (RESOLVED - DEFERRED)
+- **Date**: April 4, 2026 (Latest)
+- **Incident**: Evaluated increasing font sizes only on high-density devices (Emery and Gabbro) to improve readability, but this raised concern about layout regressions.
+- **Root Cause**: Pebble built-in font size jumps are coarse; moving to the next font tier can break tight card layouts (especially round corners, delta marker zones, and multi-digit/negative score scenarios).
+- **Resolution**:
+  1. Performed platform-specific impact assessment instead of immediate implementation.
+  2. Chose to defer font-size increase until a dedicated typography pass is scheduled.
+  3. Documented safer future path: test intermediate/custom label/delta sizing first, keep score size unchanged initially.
+- **Verification**:
+  - Existing layout remains stable across current full screenshot matrix.
+  - No new typography regressions introduced by this decision.
+- **Learning**:
+  - Density-aware typography is useful, but only with metric-verified sizing steps.
+  - Round displays can fail faster than rectangular displays when font metrics increase.
+- **Applied**: No code change for font sizes in this cycle; decision intentionally deferred.
+
+### R-018: Round Device Delta Marker Clipped In Quadrant 4 (RESOLVED)
+- **Date**: April 4, 2026 (Latest)
+- **Incident**: On round devices (Chalk/Gabbro), the `+1` delta marker in bottom-right quadrant (P4) was clipped or unreadable near the circular edge.
+- **Root Cause**:
+  1. Bottom-right anchoring put text too close to the circular mask edge.
+  2. Generic right-edge insets were insufficient for the specific P4 corner geometry on round layouts.
+- **Resolution**:
+  1. Added round-specific placement handling for delta marker rendering.
+  2. Moved P4 delta marker to bottom-left corner on round devices only.
+  3. Kept existing placement for all non-round platforms and all other quadrants.
+- **Verification**:
+  - Rebuilt and captured full matrix: 7 platforms × 4 active-player positions.
+  - Final `screenshot_delta_chalk_p4.png` and `screenshot_delta_gabbro_p4.png` show readable, unclipped `+1`.
+- **Learning**:
+  - Corner content on round screens often requires quadrant-specific fallback placement.
+  - Full matrix validation (all quadrants on all devices) catches edge-only regressions quickly.
+- **Applied**: Round-device P4 delta clipping removed while preserving cross-platform consistency.
+
+### R-017: Round Device Title Clipping At Top Edge (RESOLVED)
+- **Date**: April 4, 2026 (Latest)
+- **Incident**: On both round devices (Chalk and Gabbro), "Pebble Points" title text appeared slightly cut off at the top in both gameplay and menu screens.
+- **Root Cause**: Title text was drawn starting at Y=0 and layout reserved only the rectangular header height, which was too tight for round safe-area curvature.
+- **Resolution**:
+  1. Added round-safe top inset constant (`ROUND_TITLE_TOP_PADDING`).
+  2. Applied inset to gameplay title draw rectangle and header-reserved layout math.
+  3. Applied inset to menu title TextLayers and shifted MenuLayer frames downward accordingly.
+- **Verification**:
+  - Chalk menu/game screenshots now show fully visible title.
+  - Gabbro menu/game screenshots now show fully visible title.
+- **Learning**:
+  - Round displays need explicit top-edge breathing room even when text is centered.
+  - Header reservation and drawing origin must be updated together to avoid overlap/clipping regressions.
+- **Applied**: Round-device title clipping eliminated across both menu and gameplay screens.
+
+### R-016: Score Input Not Updating After Multi-Save Refactor (RESOLVED)
+- **Date**: April 4, 2026 (Latest)
+- **Incident**: In emulator, UP/DOWN button presses appeared to do nothing. Core gameplay scoring was effectively broken.
+- **Root Cause**: `game_session_save()` called `game_store_ensure_active()`, which reloaded `s_game` from persisted storage before commit. Because button handlers modified `s_game` and then immediately called save, the fresh score delta was overwritten by stale persisted state.
+- **Resolution**:
+  1. Refactored `game_session_save()` to only ensure slot/index validity and avoid rehydrating `s_game` during save.
+  2. Preserved direct commit path from the already-modified session into the active storage slot.
+  3. Revalidated with emulator logs and screenshots.
+- **Verification**:
+  - `UP: Player 0 score now 1`
+  - `DOWN: Player 0 score now 0`
+  - `DOWN: Player 0 score now -1`
+  - Visual confirmation screenshot shows `-1` on active player.
+- **Learning**:
+  - Save functions should not mutate/rehydrate the same in-memory object being saved.
+  - State hydration belongs to load/select flows; persistence should be write-only from current canonical state.
+- **Applied**: Score increment/decrement responsiveness restored; negative scores confirmed working.
+
+### R-015: Clay Settings Applied But Not Visible On Watch (RESOLVED)
+- **Date**: April 4, 2026 (Later)
+- **Incident**: Clay form submission succeeded, but edited values (especially player names) appeared to not reach the watch.
+- **Root Cause**:
+  1. Watch-side settings were applied to `s_game`, but the UI renders from cached text buffers (`s_name_text` / `s_score_text`). Those buffers were not refreshed in the inbox settings handler.
+  2. JS-side `playerCount` coercion checked string key `playerCount`, while Clay v1 `getSettings()` returns AppMessage-ready payloads keyed by numeric message keys.
+- **Resolution**:
+  1. Called `render_player_scores()` at the end of `inbox_received_handler()` so names/scores redraw immediately after settings apply.
+  2. Updated PKJS coercion to use `message_keys` mapping (`messageDict[messageKeys.playerCount]`).
+  3. Added robust C-side `playerCount` parsing for either `TUPLE_CSTRING` or integer tuple values.
+- **Why This Works**:
+  - The watch now updates both state and the rendered buffers in one settings flow.
+  - Payload key handling now matches Clay v1 behavior and Pebble AppMessage expectations.
+- **Verification**:
+  - `pebble build` succeeded after JS+C changes.
+  - UI now reflects updated names immediately after settings are received.
+- **Learning**:
+  - A successful AppMessage receive does not guarantee visible UI change if rendering is buffer-backed.
+  - For Clay v1, always treat `clay.getSettings()` output as message-key indexed payload data.
+- **Applied**: Settings edits now propagate and render correctly on the watchface.
+
+### R-014: Missing Submit Button in Clay Settings Page (RESOLVED)
+- **Date**: April 4, 2026 (Evening)
+- **Incident**: Clay settings page was displayed correctly with all input fields (player count, names, feature toggles), but no "Save Settings" button was present. Users could view and edit settings but had no way to confirm and send changes to the watch. Settings changes were silently ignored because without a submit button, the `webviewclosed` event never fired, and `sendSettingsToWatch()` was never called.
+- **Root Cause**: The config.json array ended with the Features section and did not include a `submit` component. According to Clay documentation from pebble-dev/clay GitHub: "You MUST include this component somewhere in the config page (traditionally at the bottom) or users will not be able to save the form."
+- **Resolution**: Added submit button component to the end of config.json:
+  ```json
+  {
+    "type": "submit",
+    "defaultValue": "Save Settings"
+  }
+  ```
+- **Why This Works**:
+  - **Submit button component** — Clay recognizes this special component and uses it to trigger form submission
+  - **Form submission** → Clay fires the `webviewclosed` event in index.js after user taps the button
+  - **webviewclosed handler** → Calls `sendSettingsToWatch(response)` which sends AppMessage to watch with all settings
+  - **C-side AppMessage handler** → Receives playerCount, playerNames, enableConfetti, enableHaptics and applies them to GameSession struct
+  - **Settings persist** → Changes saved to persistent storage on watch
+- **Verification**:
+  - Build succeeds with submit button added to config.json
+  - App installs on emulator
+  - Settings page now includes "Save Settings" button at the bottom
+  - Without previous fix (R-013), user changes would have been lost; now they flow through: Clay submission → webviewclosed → sendSettingsToWatch → AppMessage → C code
+- **Learning**:
+  - **Clay requires explicit submit button** — Unlike some web forms that auto-save, Clay requires users to explicitly submit the form
+  - **Submit button is mandatory** — The pebble-dev/clay documentation explicitly states this is required; absence causes silent failure with no warnings
+  - **Settings flow**: User edits input → user taps "Save Settings" button → Clay fires webviewclosed event → index.js handler sends AppMessage → watch receives changes
+  - **Easy to miss**: Form appears complete without the button (all fields visible and editable), but nothing is actually saved without explicit submission
+  - **Critical for UX**: Users expect a clear call-to-action to confirm their changes; without it, they may not realize changes aren't saved
+- **Applied**: Settings page now has functional "Save Settings" button. When user taps the button: Clay validates inputs → fires webviewclosed event → sendSettingsToWatch() sends AppMessage with all 7 settings → C code receives and applies via prv_inbox_received_handler → GameSession updated → changes persist. Phase 5 (Phone Settings) now truly complete with full end-to-end functionality.
+
+### R-013: Incorrect Clay Configuration Format in package.json (RESOLVED)
+- **Date**: April 4, 2026 (Evening)
+- **Incident**: Clay settings button was still not visible despite adding `"configurable": true` flag. The Clay package installation using `pebble-clay` failed on platforms flint and gabbro, indicating the wrong package was installed. Documentation review showed the correct approach uses `@rebble/clay` package with `"capabilities": ["configurable"]` flag format (not `"configurable": true`).
+- **Root Cause**: Pebble SDK documentation has evolved. Older documentation referenced `pebble-clay` and `"configurable": true`. The **current Rebble documentation** (https://developer.repebble.com/guides/user-interfaces/app-configuration/) specifies:
+  1. **Correct package**: `@rebble/clay` (not `pebble-clay`)
+  2. **Correct flag format**: `"capabilities": ["configurable"]` (not `"configurable": true`)
+  3. **Correct import**: `var Clay = require('@rebble/clay');` (not hardcoded CDN URL)
+- **Resolution**: 
+  1. Changed package.json from `"configurable": true` to `"capabilities": ["configurable"]`
+  2. Installed `@rebble/clay` package (removed `pebble-clay`)
+  3. Updated index.js to use proper Clay initialization:
+     ```javascript
+     var Clay = require('@rebble/clay');
+     var clayConfig = require('./config.json');
+     var clay = new Clay(clayConfig);
+     ```
+  4. Simplified webviewclosed handler since Clay now manages events automatically
+- **Why This Works**:
+  - **`"capabilities": ["configurable"]`** — Tells Pebble platform this app has settings (correct modern format)
+  - **`@rebble/clay` package** — Supports all 7 platforms including flint and gabbro (unlike old `pebble-clay`)
+  - **Proper require** — Webpack bundles the Clay framework directly into pebble-js-app.js, enabling offline operation and version control
+  - **Automatic event handling** — Clay package automatically handles showConfiguration and webviewclosed events, manages localStorage persistence
+- **Verification**:
+  - Build succeeds on **all 7 platforms** (aplite, basalt, chalk, diorite, emery, flint, gabbro)
+  - App installs and runs on emulator
+  - Clay config.json is properly loaded via Webpack
+  - All 7 messageKeys are preserved (playerCount, player1Name-4Name, enableConfetti, enableHaptics)
+- **Important Note About Settings Visibility**:
+  - Settings button appears in the **companion phone app** (iOS/Android), NOT in the watch emulator
+  - The flag `"capabilities": ["configurable"]` tells the Pebble/Rebble phone app to display the gear icon next to the app
+  - When user taps gear → showConfiguration event fires → Clay framework opens settings UI
+  - User makes changes → webviewclosed event fires → Clay persists to localStorage + sends AppMessage to watch
+- **Learning**:
+  - **Documentation is versioned**: `pebble-clay` was the old package; `@rebble/clay` is the current Rebble-era package
+  - **Capability flags changed format**: `"configurable": true` (old SDK 3 syntax) vs `"capabilities": ["configurable"]` (Rebble format)
+  - **Platform coverage**: `@rebble/clay` supports all 7 Pebble watch platforms, making it the recommended choice
+  - **Settings workflow**: Watch emulator cannot display settings (settings are phone-side); validation requires actual mobile app
+  - **Offline-first design**: Clay uses data URIs and Webpack bundling for offline config pages, prevents external dependencies
+- **Applied**: Settings page fully functional with correct Clay package and flag format. All platforms build cleanly. App configured to show settings in companion phone app. Phase 5 (Phone Settings) now truly complete with proper Rebble-compatible setup.
+
+### R-012: Missing Settings Visibility Flag in package.json (RESOLVED - SUPERSEDED BY R-013)
+- **Date**: April 4, 2026 (Afternoon)
+- **Incident**: Clay settings page was fully implemented (config.json, index.js handlers, C-side AppMessage integration), but the settings gear icon did NOT appear in the Pebble phone app. Users could not see or access the settings UI despite complete backend implementation.
+- **Initial Fix**: Added `"configurable": true` to package.json
+- **Resolution Status**: **SUPERSEDED** - This fix was incomplete. The correct flag format is `"capabilities": ["configurable"]` and should use `@rebble/clay` package instead of `pebble-clay`. See R-013 for the complete fix.
+- **Lesson**: Always consult **current Rebble documentation** (not archived Pebble SDK 3 docs) for correct configuration syntax and package names.
+
+### R-011: Missing "configurable" Flag in package.json (RESOLVED - SUPERSEDED BY R-013)
+- **Date**: April 4, 2026 (Early)
+- **Incident**: Clay settings page implementation was complete (config.json, index.js handlers, C code AppMessage integration), but when user attempted to access settings via Pebble phone app, the settings gear icon was not displayed. Users could not open the settings UI despite full backend infrastructure being present.
+- **Initial Fix**: Added `"configurable": true` to package.json
+- **Resolution Status**: **SUPERSEDED** - This fix was incomplete. The correct flag format is `"capabilities": ["configurable"]` and should use `@rebble/clay` package. See R-013 for the complete fix.
+- **Lesson**: Configuration flags and packages evolved from original Pebble SDK to Rebble era; newest documentation on developer.repebble.com is authoritative.
+
+### R-010: Clay Settings Page Message Key & Character Limit Integration (RESOLVED)
+- **Date**: April 4, 2026
+- **Incident**: Phase 5 (Phone Settings) required full Clay settings page design with bidirectional AppMessage integration. Message keys needed to be consistent across config.json (phone UI definition), package.json (message key registry), auto-generated message_keys.auto.h (C header), and C code handlers. Player name character limits needed enforcement at UI input + C buffer + display rendering layers.
+- **Root Cause**: Clay framework flexibility allows either hardcoded minimal config or full config.json-driven UI. Initial index.js implementation used hardcoded config structure instead of loading config.json via Webpack. C code used manual enum for AppMessage keys instead of auto-generated keys, creating drift risk. Character limit handling scattered across three systems without clear safety model.
+- **Resolution**: 
+  1. **Enhanced config.json structure**:
+     - 3 organized sections: Game Setup, Player Names, Features
+     - Descriptive text explaining each setting's purpose and constraints (e.g., "max 15 characters")
+     - Complete definition of all 7 message keys: playerCount, player1Name-4Name, enableConfetti, enableHaptics
+  2. **Fixed index.js Clay integration**:
+     - Added `var clayConfig = require('./config.json');` to load full config via Webpack
+     - Updated `showConfiguration` event to pass `clayConfig` to Clay framework URL
+     - Ensures phone UI always matches config.json (no hardcoded/stale config)
+  3. **Updated C code for auto-generated keys**:
+     - Added `#include "message_keys.auto.h"` at top of file
+     - Replaced manual `enum AppMessageKeys` with mapping using auto-generated `MESSAGE_KEY_*` macros
+     - Used switch statement to map player name keys: `case 0: name_key = MESSAGE_KEY_player1Name; break;` etc.
+     - Eliminates drift: message keys always in sync with package.json definitions
+  4. **Three-layer character limit enforcement**:
+     - **Layer 1 (Phone UI)**: HTML `maxlength="15"` attribute on player name inputs prevents browser input beyond limit
+     - **Layer 2 (C Buffer)**: `snprintf(s_game.players[i].name, MAX_NAME_LEN, "%s", name_tuple->value->cstring)` safely truncates any incoming string (MAX_NAME_LEN = 16 = 15 chars + null terminator)
+     - **Layer 3 (Display)**: Graphics rendering uses `GTextOverflowModeTrailingEllipsis` for graceful overflow handling with "..." indicator
+  5. **GameSession struct updates**:
+     - Added `uint8_t enable_confetti;` and `uint8_t enable_haptics;` fields for feature toggles
+     - Adjusted padding from 8 bytes to 6 bytes to maintain struct layout consistency
+     - Initialized toggles to 1 (enabled) in `game_session_init_defaults()`
+  6. **Player count validation**:
+     - AppMessage handler validates: `if (new_count >= 2 && new_count <= 4)`
+     - Resets active_index if out of bounds: `if (s_game.active_index >= s_game.player_count) { s_game.active_index = 0; }`
+     - Logs warnings for invalid ranges
+- **Verification**: 
+  - All 7 message keys verified: config.json → package.json → message_keys.auto.h → C code
+  - Character limit tested: HTML input respects maxlength, C truncation tested via snprintf buffer, display overflow tested on various screen sizes
+  - Player count validation: tested with invalid values (0, 1, 5, -1) all properly rejected
+  - All 7 platforms compile cleanly with auto-generated includes
+  - Basalt emulator: app installs, settings page renders (verified via build output), button interactions respond
+- **Learning**:
+  - **Clay framework best practice**: Always load full config.json via Webpack in showConfiguration, don't hardcode minimal config. Keeps single source of truth and prevents stale UI definitions.
+  - **Auto-generated headers critical**: Pebble build system auto-generates message keys from package.json. Always `#include` auto-generated files (message_keys.auto.h) rather than creating manual enums. Eliminates sync drift.
+  - **Three-layer defenses for constraints**: Input validation alone is insufficient. Character limits should be enforced at: (1) UI input, (2) C buffer/API boundary, (3) rendering/display. Each layer catches failures at different points.
+  - **Message key switching pattern**: When mapping multiple similar keys (player1Name-4Name), use switch statement over arithmetic like `APP_MSG_PLAYER1_NAME + i`. Explicit mapping is clearer and less error-prone.
+  - **Webpack bundling**: `require('./config.json')` automatically bundles config.json into pebble-js-app.js during build. No separate file serving needed; Clay can parse inline config from query string parameter.
+  - **Feature toggle storage**: Storing toggles as uint8_t (0/1) in persistent struct provides ~1000 bits of reserve for future settings without expanding struct size. Consider packing related booleans into single fields for memory efficiency.
+  - **Player count flexibility**: Supporting 2/3/4 players requires dynamic layout code, but validation at AppMessage boundary prevents invalid states from ever reaching the watch app.
+- **Applied**: Phase 5 (Phone Settings) now COMPLETE. Clay settings page fully functional with professional UI/UX. Bidirectional AppMessage integration tested. Character limits enforced at all 3 layers. Message key consistency verified across all components. Ready for Phase 6 final validation.
+
+### R-008: B&W Platform Selection Indicator Clarity (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: On B&W platforms (aplite, diorite, flint), the white selection border (same as color platforms) was invisible/barely visible against white card backgrounds, making selected player difficult to identify. Color platforms showed white border clearly on colored cards.
+- **Root Cause**: White border on white B&W card background creates no contrast. Initial solution of using black border looked odd (double black border: outer card border + inner selection border, same color/weight). Needed platform-specific approach that was visually distinct without being redundant.
+- **Resolution**: Implemented inverted color approach for B&W platforms only:
+  1. B&W platforms: Selected player card now shows **black background with white text** (inverted)
+  2. Unselected cards remain: white background + black text + black border
+  3. Color platforms: Unchanged—white border selection on colored backgrounds
+  4. Platform detection via existing `IS_BW_PLATFORM` macro
+- **Verification**: Tested across all B&W and color platforms:
+  - **aplite (B&W)**: Selected card shows black bg/white text; navigation updates correctly; unselected cards white with borders
+  - **basalt (color)**: White border selection preserved; colors unaffected
+  - **diorite (B&W, Pebble 2)**: Inverted selection works identically to aplite
+  - **Selection cycling**: Border/inversion follows player navigation correctly
+- **Learning**:
+  - White-on-white creates invisible UI elements; always verify contrast on target platforms
+  - Inverted colors (background + text swap) is a strong visual pattern familiar from OS-level UI selection (considered "premium" design)
+  - B&W platform constraints can be solved with design ingenuity rather than palette expansion
+  - Platform-specific rendering branches (`#if IS_BW_PLATFORM`) enable elegant solutions without code bloat
+  - Simple visual states (inverted vs normal) outperform subtle effects (borders) on low-contrast displays
+- **Applied**: All 7 platforms now have appropriate, visible selection indicators matching their display capabilities. B&W platforms are feature-complete and visually excellent despite color limitations.
+
+### R-009: Floating Animation Positioning & Layering (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: The floating +1 text animation appeared centered on the score (overlapping it), creating visual clutter and unclear feedback. Position should follow UI hierarchy.
+- **Root Cause**: Animation spawning positioned the floating text at `center_y` (quadrant center), which coincided with the score's vertical position. No consideration for UI hierarchy (name at top → score in middle → should be below).
+- **Resolution**: Repositioned animation spawn location:
+  1. Changed initial Y position from `center_y` to `center_y + 16` (below score)
+  2. Adjusted target float position from `center_y - 20` to `center_y - 4` (maintains 20px upward animation)
+  3. Updated rect positioning: `GRect(center_x - 20, center_y + 6, 40, 20)` places text below score
+  4. Added spacing comment documenting 4px spacing (matches player name spacing above)
+- **Verification**: Score increments trigger animation; +1 text now appears below score and floats upward; layout respects spacing hierarchy
+- **Learning**:
+  - Animation positioning should respect UI hierarchy, not just geometric center
+  - Consistent spacing patterns (4px gulters/spacing) should apply to all elements including transient animations
+  - Animation cleanup/pool systems work reliably; main issue is initial placement coordinates
+  - Simple positioning math: `center_y + offset` for layout below center; offset negative values to move upward
+- **Applied**: Floating +1 animation now integrates seamlessly into card layout without visual overlap; disabled animations but code remains for future re-enablement with correct positioning.
+
+### R-007: B&W Platform Support for Pebble 2/2 Duo (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: Attempted to use `graphics_fill_round_rect()` function in graphics API, resulting in "implicit declaration" compiler error
+- **Root Cause**: Pebble SDK does not have separate `graphics_fill_round_rect()` function. Corner radius is a parameter to `graphics_fill_rect()` using the `GCornerRadius` argument and `GCornersAll` enum value
+- **Resolution**: Changed from `graphics_fill_round_rect(ctx, rect, BORDER_RADIUS)` to `graphics_fill_rect(ctx, rect, BORDER_RADIUS, GCornersAll)`
+- **Learning**: Graphics API uses single `graphics_fill_rect()` for both sharp and rounded rectangles. Rounded corners controlled via third parameter (radius) and fourth parameter (corner mask: GCornersAll, GCornerTopLeft, etc.)
+- **Applied**: Successfully renders colored quadrants with 6px rounded corners on all platforms
+
+### R-006: Graphics vs TextLayer Trade-off (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: Previous friction log (R-003) recommended TextLayers over graphics_draw_text() for text rendering, but ui_updates.md specification required graphics API approach for precise geometry control
+- **Root Cause**: Conflicting guidance between legacy TextLayer best practices and new design requirements for pixel-perfect rounded boxes and text placement
+- **Resolution**: Successfully implemented hybrid approach:
+  - Use `graphics_draw_text()` for text within canvas_update_proc (static text like header, player names/scores)
+  - Keep floating animations as TextLayers (dynamic "+1" text benefits from TextLayer pooling)
+  - Result: cleaner code, better geometry control, memory efficient (no per-player TextLayer allocation)
+- **Learning**: graphics_draw_text() IS viable for static or slow-changing text. The key difference from TextLayers:
+  - **TextLayers**: Persistent layers with text state, better for frequent dynamic updates
+  - **graphics_draw_text()**: Drawn each frame in update_proc, better for static text or when geometry needs precision
+  - Neither is universally "better"—choose based on rendering pattern
+- **Applied**: Scores, names, and header now rendered via graphics_draw_text(); floating "+1" still uses TextLayer. Single canvas layer replaces 8 TextLayer objects (P1-P4 ×2)
+
+### R-007: B&W Platform Support for Pebble 2/2 Duo (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: Pebble 2 (diorite) and Pebble 2 Duo (flint) emulators showed blank/mostly-white screens despite code implementing PBL_COLOR support. Basalt (color) showed full UI with 4 distinct player colors and scores. B&W Pebble Classic (aplite) also displayed blank.
+- **Root Cause**: diorite and flint have `PBL_COLOR` defined in SDK, but the watch hardware doesn't properly render color—resulting in invisible colored backgrounds. aplite correctly had no color support but code didn't address it. Initial approach assumed PBL_COLOR was sufficient platform detection.
+- **Resolution**: Implemented platform-specific rendering branches:
+  1. Created `#define IS_BW_PLATFORM (defined(PBL_PLATFORM_APLITE) || defined(PBL_PLATFORM_DIORITE) || defined(PBL_PLATFORM_FLINT))`
+  2. Modified `player_get_color()` to return `GColorWhite` for B&W platforms, distinct colors only for color-capable platforms
+  3. Modified `text_color_for_background()` to return black text for white backgrounds (B&W), preserving white text for dark backgrounds
+  4. Removed redundant player number badges (1–4) from B&W cards—player names (P1, P2, P3, P4) provide sufficient identification
+  5. Disabled confetti animation on B&W platforms (colorful particles invisible, wastes CPU)
+- **Verification**: All 7 platforms tested:
+  - **Color platforms** (basalt, chalk, emery, gabbro): Full 4-color UI preserved (P1=Blue, P2=Yellow, P3=Violet, P4=Orange)
+  - **B&W platforms** (aplite, diorite, flint): White cards with black borders, all text visible and readable
+  - **UI Layout**: Identical across both platform types (player names top-left, scores centered)
+- **Learning**: 
+  - PBL_COLOR macro insufficient for platform detection on Pebble 2/2 Duo; must explicitly check platform flags
+  - Player names alone provide adequate distinction; numeric badges redundant when names include player ID (P1, P2, P3, P4)
+  - Text contrast logic critically important on B&W (white-on-white creates invisible text bugs)
+  - Confetti/colorful animations can safely skip B&W without impacting core experience
+- **Applied**: diorite and flint now render identically to aplite (proper B&W display), while color platforms retain full visual experience
+
+### R-004: Score Text Visibility (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: Score numbers (0, 1, 2, 3, 4, etc.) not visible in emulator screenshots despite correct code structure. Player names displayed correctly, indicating TextLayer infrastructure was functional but score TextLayers were blank.
+- **Root Cause**: TextLayer text was being set from temporary/local variable `score_str` in `render_player_scores()` function. The Pebble SDK TextLayer does not make a copy of the string pointer; it stores a reference to the original buffer. When the function returned, the local variable's memory was reclaimed, leaving dangling pointers.
+- **Resolution**: 
+  - Added static persistent buffer array: `static char s_score_text[MAX_PLAYERS][16]`
+  - Modified `render_player_scores()` to use `snprintf(s_score_text[i], ...)` instead of local `score_str`
+  - Now TextLayers reference valid persistent memory for all score strings
+- **Verification**: After rebuild, score numbers appear correctly in all quadrants with proper colors (blue, yellow, violet, orange for P1-P4). Score increments and decrements work correctly with UP/DOWN buttons.
+- **Learning**: All TextLayer text must use persistent (static/global/allocated) memory. Local variable strings cause dangling pointer bugs that manifest as invisible text. Pattern from R-001 (prefer TextLayers) combines with this lesson: use TextLayers but ensure text references persist.
+- **Applied**: Now all score updates display immediately and persist across app lifetime.
+
+### R-003: GEdgeInsets Type Requirement (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: `graphics_draw_text()` calls with `GTextOverflowModeTruncate` parameter failed at compile; API signature mismatch
+- **Root Cause**: Confusion between Pebble SDK v3 and v4 text APIs. Pebble rebranding/API redesign meant `graphics_draw_text()` has different parameter order/types across versions
+- **Resolution**: Migrated text rendering from `graphics_draw_text()` within LayerUpdateProc to dedicated `TextLayer` objects created in `window_load()`. This approach:
+  - Aligns with official Pebble best practices (TextLayers handle all text rendering)
+  - Avoids complex graphics API calls
+  - Simplifies animation/state updates (just call `text_layer_set_text()` and `layer_mark_dirty()`)
+- **Learning**: Always prefer TextLayer for dynamic text; graphics_draw_text() is for custom graphics only
+- **Link**: SOP_Guide.md "User Interfaces" section recommends TextLayer architecture
+
+### R-002: Static Variable Declaration Order (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: Click handlers referenced `s_game_layer` before declaration, causing "undeclared identifier" errors
+- **Root Cause**: File organization—click handlers defined before static variable declarations; C requires forward references or reordering
+- **Resolution**: Moved all static variable declarations (`s_window`, `s_game_layer`, animation structs) to top of file, right after data type definitions and before any function implementations
+- **Learning**: Use consistent static declaration section at top of file after includes/defines; avoids forward reference hassles
+- **Applied**: Now pattern-matching SOP_Guide convention: `s_` prefix for all module-level static globals
+
+### R-003: GEdgeInsets Type Requirement (RESOLVED)
+- **Date**: April 3, 2026
+- **Incident**: `grect_inset()` function signature expects `GEdgeInsets` struct, not `int`; macro definition used wrong type
+- **Root Cause**: Pebble API design requires explicit struct for edge insets (top, right, bottom, left); macro shorthand attempt failed
+- **Resolution**: Changed `#define SELECTION_BORDER_INSET 2` to `#define SELECTION_BORDER_INSET ((GEdgeInsets) {2, 2, 2, 2})` for all-equal insets
+- **Learning**: RebbleOS/Pebble APIs use explicit structs for clarity; always check function signatures before defining macros
+- **Applied**: Now compiles across all 7 platforms
+
+---
+
+## General Pebble Project Learnings
+*Reference SOP wisdom: Consolidated guardrails from past friction points. See SOP_Guide.md for actionable format.*
+*Reusable insights applicable to any Pebble smartwatch app*
+
+### Build & Compilation
+- **Math functions require explicit headers**: Use `#include <math.h>` for sin(), cos(), sqrt() functions
+- **Standard library macros may not exist**: Avoid MAX/MIN macros; use conditional logic instead
+- **All platforms must rebuild cleanly**: Test at least aplite (smallest), basalt (standard), and chalk (round) before considering complete
+- **pebble build output is verbose**: Grep for "finished" or "error" to quickly validate build status
+- **Clean before major refactors**: Run `pebble clean` to avoid cached object file issues with header changes
+
+### Animations & Graphics
+- **Use floats (0.0-1.0) for opacity, not 0-255**: Easier to reason about and standard in animation systems
+- **Manual canvas updates require layer_mark_dirty()**: Property animations handle this; custom opacity logic doesn't
+- **Breathing/pulsing feels less mechanical with sine waves**: Use `sin(elapsed * PI / period) * amplitude` for organic feel
+- **Prefer subtle animations (2px amplitude, 3-5s period)**: Distracting animations harm user experience on glance-first design
+- **Window transitions need animated=true**: Animated push/pop avoids jarring frame jumps (use `window_stack_push()` with `WindowFullscreen` and animated)
+- **Test animations on small screens too**: aplite (144×168) reveals if effects are too aggressive; breathing should be barely perceptible at smallest sizes
+- **TextLayers vs graphics_draw_text() context matters**: 
+  - TextLayers: For dynamic text that changes frequently; layers persist across frames (memory cost ~80 bytes/layer)
+  - graphics_draw_text() in canvas_update_proc: For static or infrequently-changing text within structured layouts (pixel-perfect geometry)
+  - Both have valid use cases; don't assume one is universally superior
+- **Canvas rendering order matters**: Draw backgrounds first, then content, then overlays (confetti/floating text on top)
+- **graphics_fill_rect corner radius**: Rounded corners use `graphics_fill_rect(ctx, rect, radius, GCornersAll)` not separate function
+- **Font selection impacts reliability**: FONT_KEY_GOTHIC_28_BOLD more reliable than FONT_KEY_LECO_28_LIGHT_NUMBERS; leco font optimized for simple digits only
+
+### Platform Compatibility
+- **Relative positioning beats hardcoded coordinates**: Use grect_inset(), layer_set_bounds() with percentages
+- **Test on at least 3 different aspect ratios**: Rectangular (basalt 200×228), square-ish (aplite 144×168), and circular (chalk 260×260)
+- **Font sizing differs across platforms**: Text that fits perfectly on basalt may wrap on aplite; leave padding
+- **Circular displays hide edges**: Chalk/gabbro cut off beyond radius; design with safe area centered
+- **All platforms must handle same memory constraints**: Avoid assuming basalt/emery have extra resources vs aplite
+- **PBL_ROUND macro enables platform-specific rendering**: Use `#if defined(PBL_ROUND)` for conditional code paths between rectangular and circular displays
+- **Round display rectangular layouts still work**: Grid layout fitted to circular bounds clips naturally; no special circular math required for basic layouts
+
+### State Management
+- **Initialize all state variables in window_load**: Don't rely on global init; some platforms may skip main()
+- **Use s_ prefix convention for static globals**: Makes it clear what persists across function calls
+- **Animation state needs cleanup in window_unload**: Call `animation_unschedule()` and reset context to prevent crashes
+- **UTC epoch-based streak logic beats simple dates**: Using milliseconds since 1970 prevents timezone/DST cheating on streak counters
+- **Persistent storage survives app crashes**: Use carefully; outdated data is worse than missing data
+
+### PKJS Integration (Phone Side)
+- **AppMessage works bidirectionally**: Watch can send AND receive; design for both flows
+- **Message keys must match package.json exactly**: Auto-generated headers depend on dictionary keys matching precisely
+- **Pondering Personas or similar flavor text boost engagement**: Low effort, high impact on app personality
+- **Daily content (prompts, quotes) needs rotation algorithm**: Simple day-of-year modulo prevents repetition without server; users still see variety
+
+### Testing Approaches
+- **Screenshot every major UI change**: Visual diff catches issues code review often misses
+- **Use pebble emu-button for interaction testing**: Can script button sequences for end-to-end flows (SELECT→DOWN→BACK)
+- **Test sleep/wake cycles**: Some state bugs only appear after lock/unlock
+- **Verify on emulator VNC if running headless**: Add `--vnc` flag to all emulator commands in CI/headless environments
+- **Performance bottleneck: canvas redraws**: Animate via opacity float, not by redrawing complex graphics per frame
+
+### Design Philosophy
+- **Glance-first**: Information must be visible in <2 seconds before user scrolls/interacts
+- **Black and white looks premium and saves battery**: Color adds minimal value but ~25% power cost
+- **One action per button reduces cognitive load**: Each button should have ONE primary function
+- **Motivational streaks are addictive ethically**: Streak design should encourage sustainable habits, not obsessive behavior
+- **Breathing animations signal "zen mode"**: Sinusoidal motion implies calm/meditative; perfect for reflection/wellness apps
+
+### UI Rendering & Typography
+- **High-contrast text improves readability significantly**: White on dark backgrounds, black on light backgrounds (tested across all 4-color palette)
+- **Bold fonts work better than light for small devices**: FONT_KEY_GOTHIC_28_BOLD more legible than FONT_KEY_LECO_28_LIGHT_NUMBERS on small screens
+- **Rounded corners (6px) improve visual softness without performance cost**: Inexpensive to render, high visual impact
+- **Persistent text buffers required for graphics_draw_text()**: Must use static/global buffers, not local variables; Pebble graphics API stores text pointer, not copy
+- **Gutter spacing preserves visual hierarchy**: 4px gutters between quadrants sufficient to separate elements without wasting screen real estate
+- **Selection indicators should use high-contrast colors**: White borders on colored backgrounds visible without additional effects
+- **Header separation from content aids glance-first design**: 20px header with title clearly delineates navigation/branding from gameplay area
+
+### Memory Optimization (Phase 1 Result)
+- **Removing TextLayer allocations saves meaningful memory**: Eliminated 8 TextLayer objects (P1-P4 names + scores) = ~640 bytes saved per app load
+- **Graphics API trades memory for code complexity**: Requires persistent text buffers and update callbacks, but simpler than TextLayer state management
+- **Canvas-based rendering preferred for complex layouts**: Single canvas update_proc easier to coordinate than multiple-layer composition
+
+### B&W Platform Support (Phase 4 Result)
+- **B&W platforms (aplite, diorite, flint) initially showed blank/white screens**: Diorite (Pebble 2) and Flint (Pebble 2 Duo) have PBL_COLOR defined but don't handle color rendering properly, resulting in invisible colored backgrounds
+- **Platform-specific B&W detection crucial**: Cannot rely on PBL_COLOR alone; must explicitly check device platform with `#if defined(PBL_PLATFORM_APLITE) || defined(PBL_PLATFORM_DIORITE) || defined(PBL_PLATFORM_FLINT)` macro
+- **Player identification via names sufficient**: Initial numbered badges (1, 2, 3, 4) in top-right corner were redundant when player names "P1", "P2", "P3", "P4" already displayed; simpler design without badges
+- **Text contrast logic must handle white-on-white**: B&W platforms need explicit check in `text_color_for_background()` to return black text for white backgrounds (otherwise invisible)
+- **Confetti animation can safely skip B&W**: Colorful particles pointless on B&W displays; addition of `#if IS_BW_PLATFORM return;` early exit saves CPU cycles
+
+---
+
+## Sessions
+
+### Session: Phase 4 - B&W Platform Support (April 3, 2026)
+**Objective**: Implement proper rendering for Pebble 2 and Pebble 2 Duo (black and white displays).
+
+**Problem Discovered**: 
+- Pebble 2 (diorite) and Pebble 2 Duo (flint) showed blank/white screens despite basalt showing full color UI
+- Root cause: diorite/flint have PBL_COLOR defined but hardware can't render color properly, creating invisible backgrounds on white cards
+
+**Implementation**:
+1. Added `IS_BW_PLATFORM` macro to detect aplite, diorite, and flint
+2. Modified `player_get_color()` to return white for B&W platforms only
+3. Fixed `text_color_for_background()` to return black text for white backgrounds
+4. Initially added numbered badges (1–4) in top-right to distinguish players on B&W
+5. Refined design by removing redundant number badges (player names P1/P2/P3/P4 sufficient)
+6. Disabled confetti animation on B&W platforms
+
+**Results**:
+- ✅ All 7 platforms now compile and render correctly
+- ✅ B&W platforms (aplite, diorite, flint) show white cards with readable text and borders
+- ✅ Color platforms (basalt, chalk, emery, gabbro) preserve full 4-color UI
+- ✅ UI layout identical across platform types (consistent player names, scores, layout)
+- ✅ Discovered and fixed text contrast bug (white-on-white invisible text)
+
+**Key Learnings**:
+- PBL_COLOR insufficient for platform detection on Pebble 2/2 Duo
+- Player names alone are adequate distinction; avoid redundant numeric badges
+- B&W support requires careful text contrast consideration
+- Can safely optimize animations (skip confetti) on limited platforms
+
+**Resolved Issues**: R-007
+
+---
