@@ -181,3 +181,58 @@ The following animation infrastructure is in place and tested:
 2. **Score animations**: Not yet visible (Pop scaling, floating +1, slash effect infrastructure in place but requires animation update callback implementation)
 3. **Dynamic player count from AppMessage**: UI layout code supports 2/3/4 players but phone settings integration pending
 4. **Confetti milestone**: System ready to trigger but requires score change detection logic
+
+---
+
+## Implementation Notes (Phase 5 - Completed)
+
+Date: April 6, 2026
+
+### Scope Delivered
+
+1. **Low-Hanging 1: Quick Reset Gesture**
+- Added a long-press SELECT gesture (700ms threshold).
+- Long SELECT resets only the active player's score to 0.
+- If active player score is already 0, action is a no-op.
+- Delta marker state is cleared on reset to avoid stale overlays.
+- State is persisted immediately after reset.
+- Stronger haptic confirmation is used on successful reset.
+
+2. **Low-Hanging 3: Configurable Score Step**
+- Implemented as **in-watch main-menu Settings** (not phone companion settings).
+- Added `Settings` row to main menu with live subtitle: `Score Step: X`.
+- Added settings submenu options: `+/-1`, `+/-5`, `+/-10`.
+- UP/DOWN score mutations now apply selected step size.
+- Delta marker now records actual applied delta (`+1/+5/+10`, `-1/-5/-10`).
+
+### Persistence and Safety Notes
+
+- Score-step value is persisted using reserved bytes in existing game storage.
+- Normalization guardrails enforce allowed values {1, 5, 10}.
+- Invalid or missing persisted values safely default to step `1`.
+- Existing saved score data remains compatible.
+
+### Regression Checks Performed
+
+- SELECT short click still cycles active player normally.
+- SELECT long click performs reset behavior without breaking short click flow.
+- Long reset no-op path verified when score is already zero.
+- Score step change to 10 verified via +10 score increment and rendered delta.
+- Full build verified across configured targets.
+
+### Validation Artifacts
+
+- Build command: `pebble clean && pebble build`
+- Emulator flow/screenshots captured and verified:
+    - `screenshot_main_menu_settings_selected.png`
+    - `screenshot_settings_menu_default.png`
+    - `screenshot_main_menu_step10.png`
+    - `screenshot_game_after_up_step10.png`
+    - `screenshot_game_after_long_select_reset.png`
+    - `screenshot_game_after_long_select_noop_zero.png`
+    - `screenshot_game_after_short_select_cycle.png`
+
+### File-Level Impact
+
+- Main implementation updated in `src/c/Pebble Points.c`.
+- Documentation/log updates captured in `friction.log` and `ui_updates.md`.

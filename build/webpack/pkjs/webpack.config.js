@@ -6,7 +6,7 @@ const isSandbox = false;
 
 // Array with absolute file path strings
 const entryFilenames = ["_pkjs_shared_additions.js",
-"/Users/jaredwuerzburger/Documents/GitHub/pebble_points/Pebble Points/src/pkjs/index.js"];
+"/Users/jaredwuerzburger/Documents/GitHub/Pebble-Points/src/pkjs/index.js"];
 
 // folder path string
 const outputPath = "build";
@@ -18,11 +18,11 @@ const outputFilename = "pebble-js-app.js";
 const resolveRoots = ["/Users/jaredwuerzburger/Library/Application Support/Pebble SDK/SDKs/current/sdk-core/pebble/common/include",
 "/Users/jaredwuerzburger/Library/Application Support/Pebble SDK/SDKs/current/sdk-core/pebble/common/tools/webpack",
 "/Users/jaredwuerzburger/Library/Application Support/Pebble SDK/SDKs/current/node_modules",
-"/Users/jaredwuerzburger/Documents/GitHub/pebble_points/Pebble Points/build/js"];
+"/Users/jaredwuerzburger/Documents/GitHub/Pebble-Points/build/js"];
 
 // Object, { alias1: 'path1', ... }
 const resolveAliases = {"@rebble/clay": "@rebble/clay/dist/js",
-"app_package.json": "/Users/jaredwuerzburger/Documents/GitHub/pebble_points/Pebble Points/package.json"};
+"app_package.json": "/Users/jaredwuerzburger/Documents/GitHub/Pebble-Points/package.json"};
 
 // null or Object with key 'sourceMapFilename'
 const sourceMapConfig = {"sourceMapFilename": "pebble-js-app.js.map"};

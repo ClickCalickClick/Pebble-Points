@@ -24,6 +24,9 @@
 #define MAX_SAVED_GAMES 3
 #define MAX_NAME_LEN 16
 #define MAX_PLAYER_NAME_LEN 15  // 16 - 1 for null terminator
+#define SELECT_LONG_RESET_DURATION_MS 700
+#define SCORE_STEP_DEFAULT 1
+#define SCORE_STEP_OPTION_COUNT 3
 
 // Single player state
 typedef struct {
@@ -71,11 +74,16 @@ static int s_active_game_index = -1;
 static Window *s_main_menu_window = NULL;
 static Window *s_continue_menu_window = NULL;
 static Window *s_game_window = NULL;
+static Window *s_settings_window = NULL;
 static Layer *s_game_layer = NULL;
 static MenuLayer *s_main_menu_layer = NULL;
 static MenuLayer *s_continue_menu_layer = NULL;
+static MenuLayer *s_settings_menu_layer = NULL;
 static TextLayer *s_main_menu_title_layer = NULL;
 static TextLayer *s_continue_menu_title_layer = NULL;
+static TextLayer *s_settings_title_layer = NULL;
+
+static const uint8_t SCORE_STEP_OPTIONS[SCORE_STEP_OPTION_COUNT] = {1, 5, 10};
 
 // Last score-change indicator state (single active marker)
 static int s_last_delta_player = -1;
@@ -665,6 +673,28 @@ static void score_delta_track(int player_index, int delta) {
   s_last_delta_value = delta;
 }
 
+static bool score_step_is_valid(int step) {
+  for (int i = 0; i < SCORE_STEP_OPTION_COUNT; i++) {
+    if (step == SCORE_STEP_OPTIONS[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static int score_step_normalize(int step) {
+  return score_step_is_valid(step) ? step : SCORE_STEP_DEFAULT;
+}
+
+static int score_step_get(void) {
+  return score_step_normalize((int)s_store.padding[0]);
+}
+
+static void score_step_set(int step) {
+  s_store.padding[0] = (uint8_t)score_step_normalize(step);
+  s_store.padding[1] = 0;
+}
+
 // Helper: Draw a colored rounded quadrant with text
 static void draw_quadrant(GContext *ctx, GRect quad_bounds, int player_idx, 
                          GColor player_color, bool is_selected) {
@@ -863,6 +893,7 @@ static void game_store_reset(void) {
   memset(&s_store, 0, sizeof(s_store));
   s_store.game_count = 0;
   s_store.active_game_index = 0;
+  score_step_set(SCORE_STEP_DEFAULT);
   s_active_game_index = -1;
 }
 
@@ -874,8 +905,11 @@ static void game_store_save(void) {
 static void game_store_load(void) {
   status_t ret = persist_read_data(STORAGE_KEY, &s_store, sizeof(GameStorage));
   if (ret == sizeof(GameStorage) && s_store.game_count <= MAX_SAVED_GAMES) {
+    score_step_set(score_step_get());
+
     if (s_store.game_count == 0) {
       s_active_game_index = -1;
+      game_store_save();
       return;
     }
 
@@ -1033,13 +1067,36 @@ static void prv_select_click_handler(ClickRecognizerRef recognizer, void *contex
   APP_LOG(APP_LOG_LEVEL_DEBUG, "SELECT: Active player now %d", s_game.active_index);
 }
 
+static void prv_select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_game.active_index < 0 || s_game.active_index >= s_game.player_count ||
+      s_game.active_index >= MAX_PLAYERS) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "SELECT long: invalid active index %d", s_game.active_index);
+    return;
+  }
+
+  if (s_game.players[s_game.active_index].score == 0) {
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "SELECT long: no-op, player %d already at 0", s_game.active_index);
+    return;
+  }
+
+  s_game.players[s_game.active_index].score = 0;
+  score_delta_clear();
+  game_session_save(&s_game);
+  vibes_double_pulse();
+  render_player_scores();
+
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "SELECT long: reset player %d to 0", s_game.active_index);
+}
+
 static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  const int score_step = score_step_get();
+
   // Haptic feedback (Step 14)
   vibes_short_pulse();
   
   // Increment active player score
-  score_delta_track(s_game.active_index, +1);
-  s_game.players[s_game.active_index].score++;
+  score_delta_track(s_game.active_index, score_step);
+  s_game.players[s_game.active_index].score += score_step;
   game_session_save(&s_game);
   
   // Trigger pop animation
@@ -1048,17 +1105,19 @@ static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   // Update display
   render_player_scores();
   
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "UP: Player %d score now %d", 
-          s_game.active_index, s_game.players[s_game.active_index].score);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "UP: Player %d score now %d (step=%d)", 
+          s_game.active_index, s_game.players[s_game.active_index].score, score_step);
 }
 
 static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  const int score_step = score_step_get();
+
   // Haptic feedback (Step 14)
   vibes_short_pulse();
   
   // Decrement active player score (negative scores are allowed)
-  score_delta_track(s_game.active_index, -1);
-  s_game.players[s_game.active_index].score--;
+  score_delta_track(s_game.active_index, -score_step);
+  s_game.players[s_game.active_index].score -= score_step;
   game_session_save(&s_game);
   
   // Trigger slash animation
@@ -1067,12 +1126,14 @@ static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context)
   // Update display
   render_player_scores();
   
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "DOWN: Player %d score now %d", 
-          s_game.active_index, s_game.players[s_game.active_index].score);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "DOWN: Player %d score now %d (step=%d)", 
+          s_game.active_index, s_game.players[s_game.active_index].score, score_step);
 }
 
 static void prv_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_select_click_handler);
+  window_long_click_subscribe(BUTTON_ID_SELECT, SELECT_LONG_RESET_DURATION_MS,
+                              prv_select_long_click_handler, NULL);
   window_single_click_subscribe(BUTTON_ID_UP, prv_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, prv_down_click_handler);
 }
@@ -1107,7 +1168,7 @@ static uint16_t main_menu_get_num_rows(MenuLayer *menu_layer, uint16_t section_i
   (void)menu_layer;
   (void)section_index;
   (void)context;
-  return 2;
+  return 3;
 }
 
 static void main_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
@@ -1118,14 +1179,21 @@ static void main_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex
     return;
   }
 
-  if (s_store.game_count == 0) {
-    menu_cell_basic_draw(ctx, cell_layer, "Continue Game", "No saved games", NULL);
-  } else {
-    static char subtitle[24];
-    snprintf(subtitle, sizeof(subtitle), "%d saved game%s", s_store.game_count,
-             s_store.game_count == 1 ? "" : "s");
-    menu_cell_basic_draw(ctx, cell_layer, "Continue Game", subtitle, NULL);
+  if (cell_index->row == 1) {
+    if (s_store.game_count == 0) {
+      menu_cell_basic_draw(ctx, cell_layer, "Continue Game", "No saved games", NULL);
+    } else {
+      static char subtitle[24];
+      snprintf(subtitle, sizeof(subtitle), "%d saved game%s", s_store.game_count,
+               s_store.game_count == 1 ? "" : "s");
+      menu_cell_basic_draw(ctx, cell_layer, "Continue Game", subtitle, NULL);
+    }
+    return;
   }
+
+  static char settings_subtitle[24];
+  snprintf(settings_subtitle, sizeof(settings_subtitle), "Score Step: %d", score_step_get());
+  menu_cell_basic_draw(ctx, cell_layer, "Settings", settings_subtitle, NULL);
 }
 
 static void main_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
@@ -1138,15 +1206,78 @@ static void main_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, void 
     return;
   }
 
-  if (s_store.game_count == 0) {
-    vibes_short_pulse();
+  if (cell_index->row == 1) {
+    if (s_store.game_count == 0) {
+      vibes_short_pulse();
+      return;
+    }
+
+    if (s_continue_menu_layer) {
+      menu_layer_reload_data(s_continue_menu_layer);
+    }
+    window_stack_push(s_continue_menu_window, true);
     return;
   }
 
-  if (s_continue_menu_layer) {
-    menu_layer_reload_data(s_continue_menu_layer);
+  if (s_settings_menu_layer) {
+    menu_layer_reload_data(s_settings_menu_layer);
   }
-  window_stack_push(s_continue_menu_window, true);
+  window_stack_push(s_settings_window, true);
+}
+
+static uint16_t settings_menu_get_num_sections(MenuLayer *menu_layer, void *context) {
+  (void)menu_layer;
+  (void)context;
+  return 1;
+}
+
+static uint16_t settings_menu_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  (void)menu_layer;
+  (void)section_index;
+  (void)context;
+  return SCORE_STEP_OPTION_COUNT;
+}
+
+static void settings_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
+  (void)context;
+
+  int row = cell_index->row;
+  if (row < 0 || row >= SCORE_STEP_OPTION_COUNT) {
+    menu_cell_basic_draw(ctx, cell_layer, "Invalid", "", NULL);
+    return;
+  }
+
+  int step = SCORE_STEP_OPTIONS[row];
+  int current_step = score_step_get();
+
+  static char title[24];
+  snprintf(title, sizeof(title), "Score Step: %d", step);
+  menu_cell_basic_draw(ctx, cell_layer, title,
+                      step == current_step ? "Selected" : "Tap to apply", NULL);
+}
+
+static void settings_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  (void)menu_layer;
+  (void)context;
+
+  int row = cell_index->row;
+  if (row < 0 || row >= SCORE_STEP_OPTION_COUNT) {
+    return;
+  }
+
+  int next_step = score_step_normalize((int)SCORE_STEP_OPTIONS[row]);
+  int current_step = score_step_get();
+
+  if (next_step != current_step) {
+    score_step_set(next_step);
+    game_store_save();
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Settings: score step set to %d", next_step);
+  }
+
+  if (s_main_menu_layer) {
+    menu_layer_reload_data(s_main_menu_layer);
+  }
+  window_stack_pop(true);
 }
 
 static uint16_t continue_menu_get_num_sections(MenuLayer *menu_layer, void *context) {
@@ -1237,6 +1368,50 @@ static void prv_main_menu_window_unload(Window *window) {
   if (s_main_menu_layer) {
     menu_layer_destroy(s_main_menu_layer);
     s_main_menu_layer = NULL;
+  }
+}
+
+static void prv_settings_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  const int title_height = 24;
+  const int title_y = ROUND_TITLE_TOP_PADDING;
+  const int menu_top = title_y + title_height + 2;
+
+  window_set_background_color(window, GColorBlack);
+
+  s_settings_title_layer = text_layer_create(GRect(0, title_y, bounds.size.w, title_height));
+  text_layer_set_text(s_settings_title_layer, "Settings");
+  text_layer_set_text_alignment(s_settings_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_settings_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_background_color(s_settings_title_layer, GColorBlack);
+  text_layer_set_text_color(s_settings_title_layer, GColorWhite);
+  layer_add_child(window_layer, text_layer_get_layer(s_settings_title_layer));
+
+  s_settings_menu_layer = menu_layer_create(GRect(0, menu_top, bounds.size.w, bounds.size.h - menu_top));
+  menu_layer_set_callbacks(s_settings_menu_layer, NULL, (MenuLayerCallbacks) {
+    .get_num_sections = settings_menu_get_num_sections,
+    .get_num_rows = settings_menu_get_num_rows,
+    .draw_row = settings_menu_draw_row,
+    .select_click = settings_menu_select,
+  });
+
+  menu_layer_set_normal_colors(s_settings_menu_layer, GColorBlack, GColorWhite);
+  menu_layer_set_highlight_colors(s_settings_menu_layer, GColorOrange, GColorWhite);
+
+  menu_layer_set_click_config_onto_window(s_settings_menu_layer, window);
+  layer_add_child(window_layer, menu_layer_get_layer(s_settings_menu_layer));
+}
+
+static void prv_settings_window_unload(Window *window) {
+  (void)window;
+  if (s_settings_title_layer) {
+    text_layer_destroy(s_settings_title_layer);
+    s_settings_title_layer = NULL;
+  }
+  if (s_settings_menu_layer) {
+    menu_layer_destroy(s_settings_menu_layer);
+    s_settings_menu_layer = NULL;
   }
 }
 
@@ -1451,6 +1626,12 @@ static void prv_init(void) {
     .load = prv_continue_menu_window_load,
     .unload = prv_continue_menu_window_unload,
   });
+
+  s_settings_window = window_create();
+  window_set_window_handlers(s_settings_window, (WindowHandlers) {
+    .load = prv_settings_window_load,
+    .unload = prv_settings_window_unload,
+  });
   
   s_game_window = window_create();
   window_set_click_config_provider(s_game_window, prv_click_config_provider);
@@ -1468,6 +1649,7 @@ static void prv_init(void) {
 
 static void prv_deinit(void) {
   window_destroy(s_game_window);
+  window_destroy(s_settings_window);
   window_destroy(s_continue_menu_window);
   window_destroy(s_main_menu_window);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "App deinitialized");

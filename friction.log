@@ -16,6 +16,35 @@ Check this before starting each task to avoid repeated issues.
 ## Resolved Friction Index
 *Historical record of resolved incidents and their fixes.*
 
+### R-020: Feature 1/2 Rollout With In-Watch Settings (RESOLVED)
+- **Date**: April 6, 2026 (Latest)
+- **Incident**: Implemented two requested features in one cycle: (1) long Select quick reset for the active player, and (2) configurable score step (1/5/10). Mid-planning, score-step configuration location changed from phone companion settings to an in-watch Settings menu. Primary risks were SELECT behavior regression, delta-marker correctness, and save compatibility.
+- **Root Cause**:
+  1. Existing input model only had single-click SELECT; introducing long click could unintentionally affect normal player cycling.
+  2. Existing score updates were hardcoded to +/-1 and delta marker logic assumed unit changes.
+  3. Feature-location shift to on-watch settings required local persistence without adding phone-message schema complexity.
+- **Resolution**:
+  1. Added `window_long_click_subscribe` for SELECT with 700 ms threshold; kept short-click SELECT unchanged.
+  2. Added long-click handler guardrails: active-index validation, no-op when score already 0, reset only active player, clear delta state, immediate save + redraw, stronger haptic pulse.
+  3. Added in-watch Settings menu window with Score Step options 1/5/10 and immediate apply.
+  4. Persisted score-step safely using existing reserved store bytes with normalization fallback to default 1.
+  5. Replaced hardcoded +/-1 score mutation with +/-selected score-step; delta marker now tracks true applied delta.
+- **Verification**:
+  - Full `pebble clean && pebble build` completed successfully across all configured targets.
+  - Emulator screenshots captured and inspected:
+    - `screenshot_main_menu_settings_selected.png`
+    - `screenshot_settings_menu_default.png`
+    - `screenshot_main_menu_step10.png`
+    - `screenshot_game_after_up_step10.png`
+    - `screenshot_game_after_long_select_reset.png`
+    - `screenshot_game_after_long_select_noop_zero.png`
+    - `screenshot_game_after_short_select_cycle.png`
+- **Learning**:
+  - Reserved padding bytes can safely hold compact app settings and reduce migration risk.
+  - Any SELECT long-click feature must explicitly regression-test short-click cycling.
+  - Delta-marker systems should track applied value, not assumed unit increments.
+- **Applied**: Features 1 and 2 are implemented and verified with in-watch settings UX.
+
 ### R-019: HD Device Typography Upsize Risk On Emery/Gabbro (RESOLVED - DEFERRED)
 - **Date**: April 4, 2026 (Latest)
 - **Incident**: Evaluated increasing font sizes only on high-density devices (Emery and Gabbro) to improve readability, but this raised concern about layout regressions.
@@ -444,6 +473,25 @@ Check this before starting each task to avoid repeated issues.
 ---
 
 ## Sessions
+
+### Session: Phase 5 - Quick Reset + In-Watch Score Step (April 6, 2026)
+**Objective**: Implement and verify Low-Hanging 1 and Low-Hanging 3 with score-step control moved to the watch app main menu.
+
+**Implementation**:
+1. Added SELECT long-click subscription and reset handler with guardrails.
+2. Added in-watch Settings window and menu callbacks for Score Step 1/5/10.
+3. Persisted score-step with normalization fallback and immediate save on selection.
+4. Updated UP/DOWN handlers to apply selected step and preserve delta-marker correctness.
+5. Performed build + emulator button-sequence verification and screenshot capture.
+
+**Results**:
+- ✅ Short SELECT still cycles active player.
+- ✅ Long SELECT resets only active player and clears delta marker.
+- ✅ Long SELECT on zero score is a no-op.
+- ✅ Score Step applies as configured (verified with +10 delta path).
+- ✅ Full multi-platform build succeeds.
+
+**Resolved Issues**: R-020
 
 ### Session: Phase 4 - B&W Platform Support (April 3, 2026)
 **Objective**: Implement proper rendering for Pebble 2 and Pebble 2 Duo (black and white displays).
