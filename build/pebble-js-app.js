@@ -177,6 +177,14 @@
 	  if (typeof messageDict[messageKeys.playerCount] !== 'undefined') {
 	    messageDict[messageKeys.playerCount] = parseInt(messageDict[messageKeys.playerCount], 10);
 	  }
+	
+	  // Normalize toggle payloads to numeric 0/1 values for consistent watch-side parsing.
+	  if (typeof messageDict[messageKeys.enableHaptics] !== 'undefined') {
+	    messageDict[messageKeys.enableHaptics] = messageDict[messageKeys.enableHaptics] ? 1 : 0;
+	  }
+	  if (typeof messageDict[messageKeys.enableConfetti] !== 'undefined') {
+	    messageDict[messageKeys.enableConfetti] = messageDict[messageKeys.enableConfetti] ? 1 : 0;
+	  }
 	  
 	  // Send to watch
 	  Pebble.sendAppMessage(messageDict,
@@ -263,7 +271,7 @@
 /* 6 */
 /***/ (function(module, exports) {
 
-	module.exports = [{"type":"heading","defaultValue":"Pebble Points"},{"type":"text","defaultValue":"Fast-paced score tracking for 2-4 players"},{"type":"section","items":[{"type":"heading","defaultValue":"Game Setup"},{"type":"text","defaultValue":"Choose how many players will be tracking scores."},{"type":"select","messageKey":"playerCount","defaultValue":"4","label":"Number of Players","options":[{"label":"2 Players","value":"2"},{"label":"3 Players","value":"3"},{"label":"4 Players","value":"4"}]}]},{"type":"section","items":[{"type":"heading","defaultValue":"Player Names"},{"type":"text","defaultValue":"Customize each player's display name (max 15 characters)."},{"type":"input","messageKey":"player1Name","defaultValue":"P1","label":"Player 1","attributes":{"placeholder":"Player 1","maxlength":15}},{"type":"input","messageKey":"player2Name","defaultValue":"P2","label":"Player 2","attributes":{"placeholder":"Player 2","maxlength":15}},{"type":"input","messageKey":"player3Name","defaultValue":"P3","label":"Player 3","attributes":{"placeholder":"Player 3","maxlength":15}},{"type":"input","messageKey":"player4Name","defaultValue":"P4","label":"Player 4","attributes":{"placeholder":"Player 4","maxlength":15}}]},{"type":"section","items":[{"type":"heading","defaultValue":"Features"},{"type":"text","defaultValue":"Customize watch feedback and animations."},{"type":"toggle","messageKey":"enableConfetti","label":"Enable Confetti Burst","defaultValue":true},{"type":"text","defaultValue":"Colorful animation when a player reaches a 10-point milestone."},{"type":"toggle","messageKey":"enableHaptics","label":"Enable Vibration Feedback","defaultValue":true},{"type":"text","defaultValue":"Haptic pulse when incrementing or decrementing scores."}]},{"type":"submit","defaultValue":"Save Settings"}]
+	module.exports = [{"type":"heading","defaultValue":"Pebble Points"},{"type":"text","defaultValue":"Fast-paced score tracking for 2-4 players"},{"type":"section","items":[{"type":"heading","defaultValue":"Game Setup"},{"type":"text","defaultValue":"Choose how many players will be tracking scores."},{"type":"select","messageKey":"playerCount","defaultValue":"4","label":"Number of Players","options":[{"label":"2 Players","value":"2"},{"label":"3 Players","value":"3"},{"label":"4 Players","value":"4"}]}]},{"type":"section","items":[{"type":"heading","defaultValue":"Player Names"},{"type":"text","defaultValue":"Customize each player's display name (max 15 characters)."},{"type":"input","messageKey":"player1Name","defaultValue":"P1","label":"Player 1","attributes":{"placeholder":"Player 1","maxlength":15}},{"type":"input","messageKey":"player2Name","defaultValue":"P2","label":"Player 2","attributes":{"placeholder":"Player 2","maxlength":15}},{"type":"input","messageKey":"player3Name","defaultValue":"P3","label":"Player 3","attributes":{"placeholder":"Player 3","maxlength":15}},{"type":"input","messageKey":"player4Name","defaultValue":"P4","label":"Player 4","attributes":{"placeholder":"Player 4","maxlength":15}}]},{"type":"section","items":[{"type":"heading","defaultValue":"Features"},{"type":"text","defaultValue":"Customize watch feedback and animations."},{"type":"toggle","messageKey":"enableHaptics","label":"Enable Vibration Feedback","defaultValue":true},{"type":"text","defaultValue":"Haptic pulse when incrementing or decrementing scores."}]},{"type":"submit","defaultValue":"Save Settings"}]
 
 /***/ })
 /******/ ]);

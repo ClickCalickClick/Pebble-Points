@@ -147,12 +147,14 @@ static int s_last_delta_value = 0;
 
 #if defined(PBL_ROUND)
   #define ROUND_TITLE_TOP_PADDING 6
+  #define ROUND_REPLAY_FOOTER_BOTTOM_PADDING 6
   #define ROUND_DELTA_EDGE_INSET_X 12
   #define ROUND_DELTA_EDGE_INSET_Y 4
   #define ROUND_DELTA_CORNER_EXTRA_X 10
   #define ROUND_DELTA_CORNER_EXTRA_Y 4
 #else
   #define ROUND_TITLE_TOP_PADDING 0
+  #define ROUND_REPLAY_FOOTER_BOTTOM_PADDING 0
 #endif
 
 // Layout configuration for dynamic grid
@@ -165,7 +167,9 @@ typedef struct {
 // Generate layout configuration based on player count
 static LayoutConfig layout_get_config(GRect bounds, int player_count) {
   LayoutConfig layout = {0};
-  const int replay_footer_reserved = s_replay_mode ? REPLAY_FOOTER_HEIGHT : 0;
+  const int replay_footer_reserved = s_replay_mode
+    ? (REPLAY_FOOTER_HEIGHT + ROUND_REPLAY_FOOTER_BOTTOM_PADDING)
+    : 0;
   const int header_reserved = HEADER_HEIGHT + ROUND_TITLE_TOP_PADDING;
   
   // Account for header at top and gutters
@@ -283,7 +287,7 @@ static void replay_draw_footer(GContext *ctx, GRect bounds) {
 
   GRect footer_rect = GRect(
     bounds.origin.x,
-    bounds.origin.y + bounds.size.h - REPLAY_FOOTER_HEIGHT,
+    bounds.origin.y + bounds.size.h - REPLAY_FOOTER_HEIGHT - ROUND_REPLAY_FOOTER_BOTTOM_PADDING,
     bounds.size.w,
     REPLAY_FOOTER_HEIGHT
   );
@@ -763,6 +767,33 @@ static int score_step_normalize(int step) {
 
 static int score_step_get(void) {
   return score_step_normalize((int)s_store.padding[0]);
+}
+
+static bool haptics_enabled(void) {
+  if (s_store.game_count == 0 || s_active_game_index < 0 ||
+      s_active_game_index >= s_store.game_count) {
+    return true;
+  }
+
+  return s_game.enable_haptics != 0;
+}
+
+static void haptics_short_pulse_if_enabled(void) {
+  if (haptics_enabled()) {
+    vibes_short_pulse();
+  }
+}
+
+static void haptics_long_pulse_if_enabled(void) {
+  if (haptics_enabled()) {
+    vibes_long_pulse();
+  }
+}
+
+static void haptics_double_pulse_if_enabled(void) {
+  if (haptics_enabled()) {
+    vibes_double_pulse();
+  }
 }
 
 static void score_step_set(int step) {
@@ -1458,7 +1489,7 @@ static void prv_select_click_handler(ClickRecognizerRef recognizer, void *contex
   }
 
   // Haptic feedback (Step 14)
-  vibes_long_pulse();
+  haptics_long_pulse_if_enabled();
 
   // Clear previous player's delta marker when switching players.
   score_delta_clear();
@@ -1492,7 +1523,7 @@ static void prv_select_long_click_handler(ClickRecognizerRef recognizer, void *c
   s_game.players[s_game.active_index].score = 0;
   score_delta_clear();
   game_session_save(&s_game);
-  vibes_double_pulse();
+  haptics_double_pulse_if_enabled();
   render_player_scores();
 
   APP_LOG(APP_LOG_LEVEL_DEBUG, "SELECT long: reset player %d to 0", s_game.active_index);
@@ -1502,7 +1533,7 @@ static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   const int score_step = score_step_get();
 
   // Haptic feedback (Step 14)
-  vibes_short_pulse();
+  haptics_short_pulse_if_enabled();
   
   // Increment active player score
   score_delta_track(s_game.active_index, score_step);
@@ -1524,7 +1555,7 @@ static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context)
   const int score_step = score_step_get();
 
   // Haptic feedback (Step 14)
-  vibes_short_pulse();
+  haptics_short_pulse_if_enabled();
   
   // Decrement active player score (negative scores are allowed)
   score_delta_track(s_game.active_index, -score_step);
@@ -1620,7 +1651,7 @@ static void main_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, void 
 
   if (cell_index->row == 1) {
     if (s_store.game_count == 0) {
-      vibes_short_pulse();
+      haptics_short_pulse_if_enabled();
       return;
     }
 
@@ -1765,7 +1796,7 @@ static void game_action_select(MenuLayer *menu_layer, MenuIndex *cell_index, voi
 
   if (cell_index->row == 1) {
     if (!replay_track_has_playable_data(s_selected_continue_index)) {
-      vibes_short_pulse();
+      haptics_short_pulse_if_enabled();
       return;
     }
     replay_open_selected_game();
@@ -1781,7 +1812,7 @@ static void prv_replay_select_click_handler(ClickRecognizerRef recognizer, void 
 
   if (!s_replay_complete) {
     replay_finish_playback_now();
-    vibes_short_pulse();
+    haptics_short_pulse_if_enabled();
     return;
   }
 
@@ -2194,7 +2225,17 @@ static void inbox_received_handler(DictionaryIterator *iterator, void *context) 
   
   Tuple *haptics_tuple = dict_find(iterator, MESSAGE_KEY_enableHaptics);
   if (haptics_tuple) {
-    s_game.enable_haptics = haptics_tuple->value->int32 ? 1 : 0;
+    if (haptics_tuple->type == TUPLE_CSTRING) {
+      const char *raw = haptics_tuple->value->cstring;
+      bool enabled = false;
+      if (raw) {
+        enabled = (strcmp(raw, "1") == 0) || (strcmp(raw, "true") == 0) ||
+                  (strcmp(raw, "TRUE") == 0);
+      }
+      s_game.enable_haptics = enabled ? 1 : 0;
+    } else {
+      s_game.enable_haptics = haptics_tuple->value->int32 ? 1 : 0;
+    }
     APP_LOG(APP_LOG_LEVEL_DEBUG, "Haptics setting: %d", s_game.enable_haptics);
   }
   

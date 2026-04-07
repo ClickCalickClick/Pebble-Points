@@ -81,6 +81,14 @@ function sendSettingsToWatch(settings) {
   if (typeof messageDict[messageKeys.playerCount] !== 'undefined') {
     messageDict[messageKeys.playerCount] = parseInt(messageDict[messageKeys.playerCount], 10);
   }
+
+  // Normalize toggle payloads to numeric 0/1 values for consistent watch-side parsing.
+  if (typeof messageDict[messageKeys.enableHaptics] !== 'undefined') {
+    messageDict[messageKeys.enableHaptics] = messageDict[messageKeys.enableHaptics] ? 1 : 0;
+  }
+  if (typeof messageDict[messageKeys.enableConfetti] !== 'undefined') {
+    messageDict[messageKeys.enableConfetti] = messageDict[messageKeys.enableConfetti] ? 1 : 0;
+  }
   
   // Send to watch
   Pebble.sendAppMessage(messageDict,

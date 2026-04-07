@@ -3,3 +3,4 @@
 build/.lock-waf_darwin_build
 .vscode/c_cpp_properties.json
 build/config.log
+.lock-waf_darwin_build

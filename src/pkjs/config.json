@@ -106,16 +106,6 @@
       },
       {
         "type": "toggle",
-        "messageKey": "enableConfetti",
-        "label": "Enable Confetti Burst",
-        "defaultValue": true
-      },
-      {
-        "type": "text",
-        "defaultValue": "Colorful animation when a player reaches a 10-point milestone."
-      },
-      {
-        "type": "toggle",
         "messageKey": "enableHaptics",
         "label": "Enable Vibration Feedback",
         "defaultValue": true
