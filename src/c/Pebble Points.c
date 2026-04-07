@@ -32,6 +32,10 @@
 #define CHECKPOINT_TAP_INTERVAL 4
 #define MAX_CHECKPOINTS_PER_GAME 8
 #define REPLAY_FOOTER_HEIGHT 16
+#define REPLAY_FOOTER_BOTTOM_PADDING_SMALL 6
+#define REPLAY_FOOTER_BOTTOM_PADDING_LARGE 12
+#define REPLAY_FOOTER_SIDE_PADDING_SMALL 8
+#define REPLAY_FOOTER_SIDE_PADDING_LARGE 16
 
 typedef enum {
   CHECKPOINT_REASON_START = 0,
@@ -147,14 +151,12 @@ static int s_last_delta_value = 0;
 
 #if defined(PBL_ROUND)
   #define ROUND_TITLE_TOP_PADDING 6
-  #define ROUND_REPLAY_FOOTER_BOTTOM_PADDING 6
   #define ROUND_DELTA_EDGE_INSET_X 12
   #define ROUND_DELTA_EDGE_INSET_Y 4
   #define ROUND_DELTA_CORNER_EXTRA_X 10
   #define ROUND_DELTA_CORNER_EXTRA_Y 4
 #else
   #define ROUND_TITLE_TOP_PADDING 0
-  #define ROUND_REPLAY_FOOTER_BOTTOM_PADDING 0
 #endif
 
 // Layout configuration for dynamic grid
@@ -167,8 +169,11 @@ typedef struct {
 // Generate layout configuration based on player count
 static LayoutConfig layout_get_config(GRect bounds, int player_count) {
   LayoutConfig layout = {0};
+  const int replay_bottom_padding = (bounds.size.w >= 180)
+    ? REPLAY_FOOTER_BOTTOM_PADDING_LARGE
+    : REPLAY_FOOTER_BOTTOM_PADDING_SMALL;
   const int replay_footer_reserved = s_replay_mode
-    ? (REPLAY_FOOTER_HEIGHT + ROUND_REPLAY_FOOTER_BOTTOM_PADDING)
+    ? (REPLAY_FOOTER_HEIGHT + replay_bottom_padding)
     : 0;
   const int header_reserved = HEADER_HEIGHT + ROUND_TITLE_TOP_PADDING;
   
@@ -285,10 +290,20 @@ static void replay_draw_footer(GContext *ctx, GRect bounds) {
     return;
   }
 
+  const int footer_side_padding = (bounds.size.w >= 180)
+    ? REPLAY_FOOTER_SIDE_PADDING_LARGE
+    : REPLAY_FOOTER_SIDE_PADDING_SMALL;
+  const int footer_bottom_padding = (bounds.size.w >= 180)
+    ? REPLAY_FOOTER_BOTTOM_PADDING_LARGE
+    : REPLAY_FOOTER_BOTTOM_PADDING_SMALL;
+  const char *footer_text = s_replay_complete
+    ? "Sel=Continue  Up=Replay"
+    : "Sel=Skip  Back=Exit";
+
   GRect footer_rect = GRect(
-    bounds.origin.x,
-    bounds.origin.y + bounds.size.h - REPLAY_FOOTER_HEIGHT - ROUND_REPLAY_FOOTER_BOTTOM_PADDING,
-    bounds.size.w,
+    bounds.origin.x + footer_side_padding,
+    bounds.origin.y + bounds.size.h - REPLAY_FOOTER_HEIGHT - footer_bottom_padding,
+    bounds.size.w - (2 * footer_side_padding),
     REPLAY_FOOTER_HEIGHT
   );
 
@@ -298,7 +313,7 @@ static void replay_draw_footer(GContext *ctx, GRect bounds) {
   graphics_context_set_text_color(ctx, GColorWhite);
   graphics_draw_text(
     ctx,
-    s_replay_complete ? "Select: Continue  Up: Replay" : "Select: Skip end  Back: Exit",
+    footer_text,
     fonts_get_system_font(FONT_KEY_GOTHIC_14),
     footer_rect,
     GTextOverflowModeTrailingEllipsis,
