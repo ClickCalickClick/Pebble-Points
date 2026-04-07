@@ -120,9 +120,9 @@ Mapped device support:
 - **Pebble Time Steel** — 2015 (`basalt`)
 - **Pebble Time Round** — 2015 (`chalk`)
 - **Pebble 2** — 2016 (`diorite`)
-- **Pebble 2 HR / Duo-class target** — 2016 (`flint`)
+- **Pebble 2 Duo** — 2016 (`flint`)
 - **Pebble Time 2** — announced 2016 (`emery`)
-- **`gabbro` target** — included by manifest for SDK platform compatibility
+- **`gabbro` target** — additional SDK target enabled in this app manifest for broader compatibility; model mapping can vary by toolchain/rebble environment
 
 > Note: `emery` (Pebble Time 2) was announced but not broadly shipped commercially.
 
@@ -159,4 +159,3 @@ In headless environments, append `--vnc` to emulator-interacting commands.
 
 Pebble Points is an **open source project** and is made available under the **MIT License**.
 Contributions, forks, and improvements are welcome.
-
