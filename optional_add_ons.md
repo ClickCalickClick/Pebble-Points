@@ -144,3 +144,58 @@ Battery-lite mode
 Session timeline view
 That order gives fastest wins first, then one higher-creativity feature after core stability stays intact.
 
+---
+
+## Checkpoint Replay Rollout Plan (Approved UX + Optimization)
+
+Goal: ship checkpoint replay in an additive way, preserve existing gameplay behavior, and let users watch first then continue directly.
+
+### Product Decision
+
+- Replay mode type: checkpoint-only (not full-event) for v1.
+- Entry flow: Continue Game -> pick save -> action menu.
+- Action menu rows: Continue, Replay, Back.
+- Replay state: read-only (no score edits, no checkpoint writes while replaying).
+- Replay exit (Option 1 now):
+	- When replay reaches the end, user can continue directly into live game.
+	- Replay-to-live transition should not require backtracking to menus.
+
+### Release Sequencing
+
+1. Ship Option 1 now.
+1. Add Option 2 later for faster interaction.
+1. Consider Option 3 as an advanced phase.
+
+### Option Definitions
+
+- Option 1 (ship now): Replay to end, then continue into the selected live game.
+- Option 2 (future): Mid-replay quick continue action for faster handoff.
+- Option 3 (future advanced): Continue from an intermediate replay checkpoint as a forked game.
+
+### Implementation Scope for Option 1
+
+- Add replay checkpoint storage as bounded ring buffer per saved game slot.
+- Trigger checkpoints on:
+	- player switch
+	- every N scoring taps
+	- large deltas when score-step > 1
+- Keep replay data aligned with save slot ordering during promote/new-game rotation.
+- Add game action menu window between save selection and opening gameplay.
+- Add replay window with timer-driven checkpoint playback (200ms per step default).
+- At replay completion, allow direct continue into live gameplay.
+
+### Data + Safety Constraints
+
+- Keep retention to last 3 games (existing slot model).
+- Use fixed-size checkpoint records and bounded capacity.
+- Never allow replay mode to mutate live scores.
+- Only entering live Continue resumes checkpoint recording.
+
+### Validation Checklist
+
+- Continue flow unchanged when user chooses Continue.
+- Replay flow is read-only and deterministic.
+- Replay end can transition directly to live game.
+- Save-slot reordering keeps replay data attached to the correct game.
+- Existing saves remain compatible and load without reset.
+

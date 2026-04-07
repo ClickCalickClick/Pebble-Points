@@ -27,6 +27,18 @@
 #define SELECT_LONG_RESET_DURATION_MS 700
 #define SCORE_STEP_DEFAULT 1
 #define SCORE_STEP_OPTION_COUNT 3
+#define REPLAY_STORAGE_KEY_BASE 200
+#define REPLAY_TICK_MS 300
+#define CHECKPOINT_TAP_INTERVAL 4
+#define MAX_CHECKPOINTS_PER_GAME 8
+#define REPLAY_FOOTER_HEIGHT 16
+
+typedef enum {
+  CHECKPOINT_REASON_START = 0,
+  CHECKPOINT_REASON_PLAYER_SWITCH = 1,
+  CHECKPOINT_REASON_TAP_INTERVAL = 2,
+  CHECKPOINT_REASON_LARGE_DELTA = 3,
+} CheckpointReason;
 
 // Single player state
 typedef struct {
@@ -65,9 +77,28 @@ typedef struct {
   uint8_t padding[2];
 } GameStorage;
 
+typedef struct {
+  int32_t scores[MAX_PLAYERS];
+  uint8_t player_count;
+  uint8_t active_index;
+  int8_t changed_player;
+  int8_t delta;
+  uint8_t reason;
+  uint8_t reserved;
+} ReplayCheckpoint;
+
+typedef struct {
+  ReplayCheckpoint checkpoints[MAX_CHECKPOINTS_PER_GAME];
+  uint8_t count;
+  uint8_t write_index;
+  uint8_t taps_since_checkpoint;
+  uint8_t reserved;
+} ReplayTrack;
+
 // Global game state (static prefix per SOP_Guide)
 static GameSession s_game = {0};
 static GameStorage s_store = {0};
+static ReplayTrack s_replay_tracks[MAX_SAVED_GAMES] = {0};
 static int s_active_game_index = -1;
 
 // Window and layer declarations (needed early for click handlers)
@@ -75,13 +106,28 @@ static Window *s_main_menu_window = NULL;
 static Window *s_continue_menu_window = NULL;
 static Window *s_game_window = NULL;
 static Window *s_settings_window = NULL;
+static Window *s_game_action_window = NULL;
+static Window *s_replay_window = NULL;
 static Layer *s_game_layer = NULL;
+static Layer *s_replay_layer = NULL;
 static MenuLayer *s_main_menu_layer = NULL;
 static MenuLayer *s_continue_menu_layer = NULL;
 static MenuLayer *s_settings_menu_layer = NULL;
+static MenuLayer *s_game_action_menu_layer = NULL;
 static TextLayer *s_main_menu_title_layer = NULL;
 static TextLayer *s_continue_menu_title_layer = NULL;
 static TextLayer *s_settings_title_layer = NULL;
+static TextLayer *s_game_action_title_layer = NULL;
+
+static uint8_t s_selected_continue_index = 0;
+static uint8_t s_replay_source_index = 0;
+static GameSession s_replay_seed_game = {0};
+static GameSession s_replay_view_game = {0};
+static int s_replay_play_index = 0;
+static bool s_replay_mode = false;
+static bool s_replay_complete = false;
+static bool s_consume_next_game_select = false;
+static AppTimer *s_replay_timer = NULL;
 
 static const uint8_t SCORE_STEP_OPTIONS[SCORE_STEP_OPTION_COUNT] = {1, 5, 10};
 
@@ -119,6 +165,7 @@ typedef struct {
 // Generate layout configuration based on player count
 static LayoutConfig layout_get_config(GRect bounds, int player_count) {
   LayoutConfig layout = {0};
+  const int replay_footer_reserved = s_replay_mode ? REPLAY_FOOTER_HEIGHT : 0;
   const int header_reserved = HEADER_HEIGHT + ROUND_TITLE_TOP_PADDING;
   
   // Account for header at top and gutters
@@ -126,7 +173,7 @@ static LayoutConfig layout_get_config(GRect bounds, int player_count) {
     bounds.origin.x + GUTTER_SIZE,
     bounds.origin.y + header_reserved + GUTTER_SIZE,
     bounds.size.w - (2 * GUTTER_SIZE),
-    bounds.size.h - header_reserved - (2 * GUTTER_SIZE)
+    bounds.size.h - header_reserved - replay_footer_reserved - (2 * GUTTER_SIZE)
   );
   
   if (player_count == 2) {
@@ -229,6 +276,33 @@ static LayoutConfig layout_get_config(GRect bounds, int player_count) {
   return layout;
 }
 
+static void replay_draw_footer(GContext *ctx, GRect bounds) {
+  if (!s_replay_mode) {
+    return;
+  }
+
+  GRect footer_rect = GRect(
+    bounds.origin.x,
+    bounds.origin.y + bounds.size.h - REPLAY_FOOTER_HEIGHT,
+    bounds.size.w,
+    REPLAY_FOOTER_HEIGHT
+  );
+
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, footer_rect, 0, GCornerNone);
+
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(
+    ctx,
+    s_replay_complete ? "Select: Continue  Up: Replay" : "Select: Skip end  Back: Exit",
+    fonts_get_system_font(FONT_KEY_GOTHIC_14),
+    footer_rect,
+    GTextOverflowModeTrailingEllipsis,
+    GTextAlignmentCenter,
+    NULL
+  );
+}
+
 // Current layout configuration (updated in window_load)
 static LayoutConfig s_layout = {0};
 
@@ -245,6 +319,7 @@ static LayoutConfig layout_get_config(GRect bounds, int player_count);
 static void render_player_scores(void);
 static void game_session_init_defaults(GameSession *session);
 static void game_session_save(GameSession *session);
+static void replay_apply_checkpoint(const ReplayCheckpoint *checkpoint);
 
 // ============================================================================
 // PHASE 3: Animation System Infrastructure (Steps 7-11)
@@ -695,9 +770,307 @@ static void score_step_set(int step) {
   s_store.padding[1] = 0;
 }
 
+static const GameSession *display_session_get(void) {
+  return s_replay_mode ? &s_replay_view_game : &s_game;
+}
+
+static Layer *display_layer_get(void) {
+  return s_replay_mode ? s_replay_layer : s_game_layer;
+}
+
+static uint32_t replay_storage_key_for_slot(uint8_t slot_index) {
+  return (uint32_t)(REPLAY_STORAGE_KEY_BASE + slot_index);
+}
+
+static void replay_track_clear(ReplayTrack *track) {
+  if (!track) {
+    return;
+  }
+  memset(track, 0, sizeof(ReplayTrack));
+}
+
+static void replay_track_save_slot(uint8_t slot_index) {
+  if (slot_index >= MAX_SAVED_GAMES) {
+    return;
+  }
+  persist_write_data(replay_storage_key_for_slot(slot_index),
+                     &s_replay_tracks[slot_index], sizeof(ReplayTrack));
+}
+
+static void replay_tracks_save_all(void) {
+  for (uint8_t i = 0; i < MAX_SAVED_GAMES; i++) {
+    replay_track_save_slot(i);
+  }
+}
+
+static void replay_tracks_load(void) {
+  for (uint8_t i = 0; i < MAX_SAVED_GAMES; i++) {
+    replay_track_clear(&s_replay_tracks[i]);
+
+    status_t ret = persist_read_data(replay_storage_key_for_slot(i),
+                                     &s_replay_tracks[i], sizeof(ReplayTrack));
+    if (ret != sizeof(ReplayTrack)) {
+      replay_track_clear(&s_replay_tracks[i]);
+      continue;
+    }
+
+    if (s_replay_tracks[i].count > MAX_CHECKPOINTS_PER_GAME) {
+      replay_track_clear(&s_replay_tracks[i]);
+      continue;
+    }
+
+    if (s_replay_tracks[i].write_index >= MAX_CHECKPOINTS_PER_GAME) {
+      s_replay_tracks[i].write_index = 0;
+    }
+  }
+}
+
+static uint8_t replay_track_oldest_index(const ReplayTrack *track) {
+  if (!track || track->count == 0) {
+    return 0;
+  }
+  if (track->count < MAX_CHECKPOINTS_PER_GAME) {
+    return 0;
+  }
+  return track->write_index;
+}
+
+static const ReplayCheckpoint *replay_track_get_ordered(const ReplayTrack *track,
+                                                        uint8_t ordered_index) {
+  if (!track || ordered_index >= track->count) {
+    return NULL;
+  }
+
+  uint8_t oldest = replay_track_oldest_index(track);
+  uint8_t physical = (uint8_t)((oldest + ordered_index) % MAX_CHECKPOINTS_PER_GAME);
+  return &track->checkpoints[physical];
+}
+
+static void replay_track_append_snapshot(uint8_t slot_index, int changed_player,
+                                         int delta, CheckpointReason reason) {
+  if (slot_index >= MAX_SAVED_GAMES || slot_index >= s_store.game_count) {
+    return;
+  }
+
+  GameSession *session = &s_store.games[slot_index];
+  ReplayTrack *track = &s_replay_tracks[slot_index];
+
+  ReplayCheckpoint checkpoint = {0};
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    checkpoint.scores[i] = session->players[i].score;
+  }
+  checkpoint.player_count = (uint8_t)session->player_count;
+  checkpoint.active_index = (uint8_t)session->active_index;
+  checkpoint.changed_player = (int8_t)changed_player;
+  checkpoint.delta = (int8_t)delta;
+  checkpoint.reason = (uint8_t)reason;
+
+  track->checkpoints[track->write_index] = checkpoint;
+  if (track->count < MAX_CHECKPOINTS_PER_GAME) {
+    track->count++;
+  }
+  track->write_index = (uint8_t)((track->write_index + 1) % MAX_CHECKPOINTS_PER_GAME);
+  track->taps_since_checkpoint = 0;
+
+  replay_track_save_slot(slot_index);
+}
+
+static void replay_track_seed_from_game(uint8_t slot_index) {
+  if (slot_index >= s_store.game_count || slot_index >= MAX_SAVED_GAMES) {
+    return;
+  }
+
+  replay_track_clear(&s_replay_tracks[slot_index]);
+  replay_track_append_snapshot(slot_index, -1, 0, CHECKPOINT_REASON_START);
+}
+
+static void replay_tracks_sync_with_store(void) {
+  for (uint8_t i = 0; i < s_store.game_count && i < MAX_SAVED_GAMES; i++) {
+    if (s_replay_tracks[i].count == 0) {
+      replay_track_seed_from_game(i);
+    }
+  }
+
+  for (uint8_t i = s_store.game_count; i < MAX_SAVED_GAMES; i++) {
+    replay_track_clear(&s_replay_tracks[i]);
+    replay_track_save_slot(i);
+  }
+}
+
+static void replay_track_record_player_switch(void) {
+  if (s_active_game_index < 0 || s_active_game_index >= s_store.game_count) {
+    return;
+  }
+
+  replay_track_append_snapshot((uint8_t)s_active_game_index, s_game.active_index, 0,
+                               CHECKPOINT_REASON_PLAYER_SWITCH);
+}
+
+static void replay_track_record_score_change(int changed_player, int delta) {
+  if (s_active_game_index < 0 || s_active_game_index >= s_store.game_count) {
+    return;
+  }
+
+  ReplayTrack *track = &s_replay_tracks[s_active_game_index];
+  track->taps_since_checkpoint++;
+
+  bool should_checkpoint = false;
+  CheckpointReason reason = CHECKPOINT_REASON_TAP_INTERVAL;
+
+  if (abs(delta) > 1) {
+    should_checkpoint = true;
+    reason = CHECKPOINT_REASON_LARGE_DELTA;
+  }
+
+  if (track->taps_since_checkpoint >= CHECKPOINT_TAP_INTERVAL) {
+    should_checkpoint = true;
+    if (abs(delta) <= 1) {
+      reason = CHECKPOINT_REASON_TAP_INTERVAL;
+    }
+  }
+
+  if (!should_checkpoint) {
+    return;
+  }
+
+  replay_track_append_snapshot((uint8_t)s_active_game_index, changed_player, delta, reason);
+}
+
+static void replay_cancel_timer(void) {
+  if (s_replay_timer) {
+    app_timer_cancel(s_replay_timer);
+    s_replay_timer = NULL;
+  }
+}
+
+static void replay_sync_view_to_current_game(void) {
+  if (s_replay_source_index >= s_store.game_count ||
+      s_replay_source_index >= MAX_SAVED_GAMES) {
+    return;
+  }
+
+  // Always finish replay on the current saved game state, even when the
+  // most recent score taps did not trigger a new checkpoint.
+  s_replay_view_game = s_store.games[s_replay_source_index];
+}
+
+static void replay_set_complete(void) {
+  if (!s_replay_complete) {
+    s_replay_complete = true;
+    replay_sync_view_to_current_game();
+    score_delta_clear();
+    render_player_scores();
+  }
+}
+
+static void replay_finish_playback_now(void) {
+  if (s_replay_source_index >= MAX_SAVED_GAMES) {
+    replay_set_complete();
+    return;
+  }
+
+  ReplayTrack *track = &s_replay_tracks[s_replay_source_index];
+  replay_cancel_timer();
+
+  if (track->count == 0) {
+    s_replay_view_game = s_replay_seed_game;
+    replay_set_complete();
+    return;
+  }
+
+  s_replay_play_index = track->count - 1;
+  const ReplayCheckpoint *last = replay_track_get_ordered(track, (uint8_t)s_replay_play_index);
+  replay_apply_checkpoint(last);
+  replay_set_complete();
+}
+
+static void replay_apply_checkpoint(const ReplayCheckpoint *checkpoint) {
+  if (!checkpoint) {
+    return;
+  }
+
+  s_replay_view_game = s_replay_seed_game;
+  s_replay_view_game.player_count = checkpoint->player_count;
+  s_replay_view_game.active_index = checkpoint->active_index;
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    s_replay_view_game.players[i].score = checkpoint->scores[i];
+  }
+
+  if (checkpoint->changed_player >= 0 && checkpoint->changed_player < MAX_PLAYERS &&
+      checkpoint->delta != 0) {
+    s_last_delta_player = checkpoint->changed_player;
+    s_last_delta_value = checkpoint->delta;
+  } else {
+    score_delta_clear();
+  }
+
+  render_player_scores();
+}
+
+static void replay_timer_callback(void *data) {
+  (void)data;
+  s_replay_timer = NULL;
+
+  if (!s_replay_mode || s_replay_source_index >= MAX_SAVED_GAMES) {
+    return;
+  }
+
+  ReplayTrack *track = &s_replay_tracks[s_replay_source_index];
+  if (track->count == 0 || s_replay_complete) {
+    return;
+  }
+
+  s_replay_play_index++;
+  if (s_replay_play_index >= track->count) {
+    replay_set_complete();
+    return;
+  }
+
+  const ReplayCheckpoint *checkpoint = replay_track_get_ordered(track, (uint8_t)s_replay_play_index);
+  replay_apply_checkpoint(checkpoint);
+
+  if (s_replay_play_index + 1 < track->count) {
+    s_replay_timer = app_timer_register(REPLAY_TICK_MS, replay_timer_callback, NULL);
+  } else {
+    replay_set_complete();
+  }
+}
+
+static void replay_begin_playback(void) {
+  replay_cancel_timer();
+  score_delta_clear();
+  s_replay_play_index = 0;
+  s_replay_complete = false;
+
+  if (s_replay_source_index >= MAX_SAVED_GAMES) {
+    s_replay_complete = true;
+    return;
+  }
+
+  ReplayTrack *track = &s_replay_tracks[s_replay_source_index];
+  if (track->count == 0) {
+    s_replay_view_game = s_replay_seed_game;
+    replay_set_complete();
+    render_player_scores();
+    return;
+  }
+
+  const ReplayCheckpoint *first = replay_track_get_ordered(track, 0);
+  replay_apply_checkpoint(first);
+
+  if (track->count <= 1) {
+    replay_set_complete();
+  } else {
+    s_replay_timer = app_timer_register(REPLAY_TICK_MS, replay_timer_callback, NULL);
+  }
+}
+
 // Helper: Draw a colored rounded quadrant with text
-static void draw_quadrant(GContext *ctx, GRect quad_bounds, int player_idx, 
-                         GColor player_color, bool is_selected) {
+static void draw_quadrant(GContext *ctx, GRect quad_bounds, int player_idx,
+                         GColor player_color, bool is_selected,
+                         const GameSession *session) {
+  (void)session;
+
   // B&W platforms: Invert colors for selected player (black bg, white text)
   // Color platforms: Use standard colored background
   #if IS_BW_PLATFORM
@@ -778,8 +1151,9 @@ static void draw_quadrant(GContext *ctx, GRect quad_bounds, int player_idx,
         delta_align = GTextAlignmentLeft;
       }
 
-      if (s_game_layer) {
-        GRect game_bounds = layer_get_bounds(s_game_layer);
+      Layer *target_layer = display_layer_get();
+      if (target_layer) {
+        GRect game_bounds = layer_get_bounds(target_layer);
         int mid_x = game_bounds.origin.x + (game_bounds.size.w / 2);
         int mid_y = game_bounds.origin.y + (game_bounds.size.h / 2);
         bool touches_right = (quad_bounds.origin.x >= mid_x);
@@ -810,21 +1184,25 @@ static void draw_quadrant(GContext *ctx, GRect quad_bounds, int player_idx,
 
 // Update all player display text buffers
 static void render_player_scores(void) {
-  for (int i = 0; i < s_game.player_count && i < MAX_PLAYERS; i++) {
+  const GameSession *session = display_session_get();
+
+  for (int i = 0; i < session->player_count && i < MAX_PLAYERS; i++) {
     // Update persistent text buffers
-    snprintf(s_score_text[i], sizeof(s_score_text[i]), "%d", s_game.players[i].score);
-    snprintf(s_name_text[i], sizeof(s_name_text[i]), "%s", s_game.players[i].name);
+    snprintf(s_score_text[i], sizeof(s_score_text[i]), "%d", session->players[i].score);
+    snprintf(s_name_text[i], sizeof(s_name_text[i]), "%s", session->players[i].name);
   }
   
   // Mark game layer dirty to trigger redraw
-  if (s_game_layer) {
-    layer_mark_dirty(s_game_layer);
+  Layer *target_layer = display_layer_get();
+  if (target_layer) {
+    layer_mark_dirty(target_layer);
   }
 }
 
 // Main rendering function for game layer
 static void prv_game_layer_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
+  const GameSession *session = display_session_get();
   
   // Draw black background
   graphics_context_set_fill_color(ctx, GColorBlack);
@@ -838,30 +1216,33 @@ static void prv_game_layer_update_proc(Layer *layer, GContext *ctx) {
     HEADER_HEIGHT
   );
   graphics_context_set_text_color(ctx, GColorWhite);
-  graphics_draw_text(ctx, "Pebble Points",
+  graphics_draw_text(ctx, s_replay_mode ? "Replay Mode" : "Pebble Points",
                     fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                     header_rect, GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   
   // Get current layout based on platform (rectangular vs round)
-  LayoutConfig layout = layout_get_config(bounds, s_game.player_count);
+  LayoutConfig layout = layout_get_config(bounds, session->player_count);
   
   #if defined(PBL_ROUND)
     // ROUND DISPLAY (Chalk, Gabbro): Pie-slice quadrants
     // For now, use rectangular quadrants fitted to circle (Phase 2 enhancement)
-    for (int i = 0; i < s_game.player_count && i < MAX_PLAYERS; i++) {
-      bool is_active = (i == s_game.active_index);
-      draw_quadrant(ctx, layout.quadrants[i], i, player_get_color(i), is_active);
+    for (int i = 0; i < session->player_count && i < MAX_PLAYERS; i++) {
+      bool is_active = (i == session->active_index);
+      draw_quadrant(ctx, layout.quadrants[i], i, player_get_color(i), is_active, session);
     }
   #else
     // RECTANGULAR DISPLAY (Basalt, Aplite, etc.): Colored rounded boxes in grid
-    for (int i = 0; i < s_game.player_count && i < MAX_PLAYERS; i++) {
-      bool is_active = (i == s_game.active_index);
-      draw_quadrant(ctx, layout.quadrants[i], i, player_get_color(i), is_active);
+    for (int i = 0; i < session->player_count && i < MAX_PLAYERS; i++) {
+      bool is_active = (i == session->active_index);
+      draw_quadrant(ctx, layout.quadrants[i], i, player_get_color(i), is_active, session);
     }
   #endif
   
   // Draw confetti particles (on top of everything)
   confetti_update_proc(layer, ctx);
+
+  // Replay mode footer explains controls and transition behavior.
+  replay_draw_footer(ctx, bounds);
 }
 
 // Initialize game session with defaults
@@ -894,6 +1275,9 @@ static void game_store_reset(void) {
   s_store.game_count = 0;
   s_store.active_game_index = 0;
   score_step_set(SCORE_STEP_DEFAULT);
+  for (uint8_t i = 0; i < MAX_SAVED_GAMES; i++) {
+    replay_track_clear(&s_replay_tracks[i]);
+  }
   s_active_game_index = -1;
 }
 
@@ -903,12 +1287,15 @@ static void game_store_save(void) {
 
 // Load store from persistence; migrates legacy single-session data when present
 static void game_store_load(void) {
+  replay_tracks_load();
+
   status_t ret = persist_read_data(STORAGE_KEY, &s_store, sizeof(GameStorage));
   if (ret == sizeof(GameStorage) && s_store.game_count <= MAX_SAVED_GAMES) {
     score_step_set(score_step_get());
 
     if (s_store.game_count == 0) {
       s_active_game_index = -1;
+      replay_tracks_sync_with_store();
       game_store_save();
       return;
     }
@@ -919,6 +1306,7 @@ static void game_store_load(void) {
 
     s_active_game_index = s_store.active_game_index;
     s_game = s_store.games[s_active_game_index];
+    replay_tracks_sync_with_store();
     return;
   }
 
@@ -950,6 +1338,8 @@ static void game_store_load(void) {
     s_game = migrated;
     game_store_save();
   }
+
+  replay_tracks_sync_with_store();
 }
 
 static void game_store_promote_to_top(uint8_t index) {
@@ -958,10 +1348,13 @@ static void game_store_promote_to_top(uint8_t index) {
   }
 
   GameSession selected = s_store.games[index];
+  ReplayTrack selected_track = s_replay_tracks[index];
   for (int i = index; i > 0; i--) {
     s_store.games[i] = s_store.games[i - 1];
+    s_replay_tracks[i] = s_replay_tracks[i - 1];
   }
   s_store.games[0] = selected;
+  s_replay_tracks[0] = selected_track;
 }
 
 static void game_store_ensure_active(void) {
@@ -973,6 +1366,7 @@ static void game_store_ensure_active(void) {
     s_store.active_game_index = 0;
     s_active_game_index = 0;
     s_game = new_game;
+    replay_track_seed_from_game(0);
     game_store_save();
     return;
   }
@@ -997,6 +1391,7 @@ static void game_store_start_new_game(void) {
 
   for (int i = shift_limit; i > 0; i--) {
     s_store.games[i] = s_store.games[i - 1];
+    s_replay_tracks[i] = s_replay_tracks[i - 1];
   }
 
   s_store.games[0] = new_game;
@@ -1007,6 +1402,8 @@ static void game_store_start_new_game(void) {
   s_store.active_game_index = 0;
   s_active_game_index = 0;
   s_game = new_game;
+  replay_track_seed_from_game(0);
+  replay_tracks_save_all();
   game_store_save();
 }
 
@@ -1022,6 +1419,12 @@ static void game_store_continue_game(uint8_t index) {
   s_store.active_game_index = 0;
   s_active_game_index = 0;
   s_game = s_store.games[0];
+
+  if (s_replay_tracks[0].count == 0) {
+    replay_track_seed_from_game(0);
+  }
+
+  replay_tracks_save_all();
   game_store_save();
 }
 
@@ -1048,6 +1451,12 @@ static void game_session_save(GameSession *session) {
 }
 
 static void prv_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_consume_next_game_select) {
+    // Prevent replay-exit select from mutating gameplay state.
+    s_consume_next_game_select = false;
+    return;
+  }
+
   // Haptic feedback (Step 14)
   vibes_long_pulse();
 
@@ -1057,6 +1466,7 @@ static void prv_select_click_handler(ClickRecognizerRef recognizer, void *contex
   // Cycle to next player
   s_game.active_index = (s_game.active_index + 1) % s_game.player_count;
   game_session_save(&s_game);
+  replay_track_record_player_switch();
   
   // Trigger selection border animation
   animation_schedule_border();
@@ -1098,6 +1508,7 @@ static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   score_delta_track(s_game.active_index, score_step);
   s_game.players[s_game.active_index].score += score_step;
   game_session_save(&s_game);
+  replay_track_record_score_change(s_game.active_index, score_step);
   
   // Trigger pop animation
   animation_schedule_pop(s_game.active_index);
@@ -1119,6 +1530,7 @@ static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context)
   score_delta_track(s_game.active_index, -score_step);
   s_game.players[s_game.active_index].score -= score_step;
   game_session_save(&s_game);
+  replay_track_record_score_change(s_game.active_index, -score_step);
   
   // Trigger slash animation
   animation_schedule_slash(s_game.active_index);
@@ -1280,6 +1692,204 @@ static void settings_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, v
   window_stack_pop(true);
 }
 
+static bool replay_track_has_playable_data(uint8_t game_index) {
+  if (game_index >= MAX_SAVED_GAMES) {
+    return false;
+  }
+  return s_replay_tracks[game_index].count > 1;
+}
+
+static uint16_t game_action_get_num_sections(MenuLayer *menu_layer, void *context) {
+  (void)menu_layer;
+  (void)context;
+  return 1;
+}
+
+static uint16_t game_action_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  (void)menu_layer;
+  (void)section_index;
+  (void)context;
+  return 3;
+}
+
+static void game_action_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
+  (void)context;
+
+  if (cell_index->row == 0) {
+    menu_cell_basic_draw(ctx, cell_layer, "Continue", "Resume live game", NULL);
+    return;
+  }
+
+  if (cell_index->row == 1) {
+    if (replay_track_has_playable_data(s_selected_continue_index)) {
+      menu_cell_basic_draw(ctx, cell_layer, "Replay", "Watch checkpoints", NULL);
+    } else {
+      menu_cell_basic_draw(ctx, cell_layer, "Replay", "No checkpoints yet", NULL);
+    }
+    return;
+  }
+
+  menu_cell_basic_draw(ctx, cell_layer, "Back", "Return to saves", NULL);
+}
+
+static void replay_open_selected_game(void) {
+  if (s_selected_continue_index >= s_store.game_count) {
+    return;
+  }
+
+  s_replay_source_index = s_selected_continue_index;
+  s_replay_seed_game = s_store.games[s_replay_source_index];
+  s_replay_view_game = s_replay_seed_game;
+  s_replay_mode = true;
+  s_replay_complete = false;
+  score_delta_clear();
+
+  window_stack_push(s_replay_window, true);
+  replay_begin_playback();
+}
+
+static void game_action_select(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  (void)menu_layer;
+  (void)context;
+
+  if (s_selected_continue_index >= s_store.game_count) {
+    return;
+  }
+
+  if (cell_index->row == 0) {
+    game_store_continue_game(s_selected_continue_index);
+    window_stack_pop(true);
+    window_stack_push(s_game_window, true);
+    return;
+  }
+
+  if (cell_index->row == 1) {
+    if (!replay_track_has_playable_data(s_selected_continue_index)) {
+      vibes_short_pulse();
+      return;
+    }
+    replay_open_selected_game();
+    return;
+  }
+
+  window_stack_pop(true);
+}
+
+static void prv_replay_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+  if (!s_replay_complete) {
+    replay_finish_playback_now();
+    vibes_short_pulse();
+    return;
+  }
+
+  uint8_t source_index = s_replay_source_index;
+  replay_cancel_timer();
+  s_replay_mode = false;
+  score_delta_clear();
+
+  window_stack_pop(false);
+  if (s_game_action_window) {
+    window_stack_remove(s_game_action_window, false);
+  }
+
+  s_consume_next_game_select = true;
+  game_store_continue_game(source_index);
+  window_stack_push(s_game_window, true);
+}
+
+static void prv_replay_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+  if (!s_replay_complete) {
+    return;
+  }
+
+  replay_begin_playback();
+}
+
+static void prv_replay_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_replay_select_click_handler);
+  window_single_click_subscribe(BUTTON_ID_UP, prv_replay_up_click_handler);
+}
+
+static void prv_game_action_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  const int title_height = 24;
+  const int title_y = ROUND_TITLE_TOP_PADDING;
+  const int menu_top = title_y + title_height + 2;
+  static char title_text[24];
+
+  window_set_background_color(window, GColorBlack);
+
+  snprintf(title_text, sizeof(title_text), "Game %d", s_selected_continue_index + 1);
+
+  s_game_action_title_layer = text_layer_create(GRect(0, title_y, bounds.size.w, title_height));
+  text_layer_set_text(s_game_action_title_layer, title_text);
+  text_layer_set_text_alignment(s_game_action_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_game_action_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_background_color(s_game_action_title_layer, GColorBlack);
+  text_layer_set_text_color(s_game_action_title_layer, GColorWhite);
+  layer_add_child(window_layer, text_layer_get_layer(s_game_action_title_layer));
+
+  s_game_action_menu_layer = menu_layer_create(GRect(0, menu_top, bounds.size.w, bounds.size.h - menu_top));
+  menu_layer_set_callbacks(s_game_action_menu_layer, NULL, (MenuLayerCallbacks) {
+    .get_num_sections = game_action_get_num_sections,
+    .get_num_rows = game_action_get_num_rows,
+    .draw_row = game_action_draw_row,
+    .select_click = game_action_select,
+  });
+
+  menu_layer_set_normal_colors(s_game_action_menu_layer, GColorBlack, GColorWhite);
+  menu_layer_set_highlight_colors(s_game_action_menu_layer, GColorCobaltBlue, GColorWhite);
+  menu_layer_set_click_config_onto_window(s_game_action_menu_layer, window);
+  layer_add_child(window_layer, menu_layer_get_layer(s_game_action_menu_layer));
+}
+
+static void prv_game_action_window_unload(Window *window) {
+  (void)window;
+  if (s_game_action_title_layer) {
+    text_layer_destroy(s_game_action_title_layer);
+    s_game_action_title_layer = NULL;
+  }
+  if (s_game_action_menu_layer) {
+    menu_layer_destroy(s_game_action_menu_layer);
+    s_game_action_menu_layer = NULL;
+  }
+}
+
+static void prv_replay_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_replay_layer = layer_create(bounds);
+  layer_set_update_proc(s_replay_layer, prv_game_layer_update_proc);
+  layer_add_child(window_layer, s_replay_layer);
+
+  window_set_background_color(window, GColorBlack);
+  render_player_scores();
+}
+
+static void prv_replay_window_unload(Window *window) {
+  (void)window;
+  replay_cancel_timer();
+
+  if (s_replay_layer) {
+    layer_destroy(s_replay_layer);
+    s_replay_layer = NULL;
+  }
+
+  s_replay_mode = false;
+  s_replay_complete = false;
+  s_consume_next_game_select = false;
+  score_delta_clear();
+}
+
 static uint16_t continue_menu_get_num_sections(MenuLayer *menu_layer, void *context) {
   (void)menu_layer;
   (void)context;
@@ -1323,8 +1933,11 @@ static void continue_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, v
     return;
   }
 
-  game_store_continue_game((uint8_t)cell_index->row);
-  window_stack_push(s_game_window, true);
+  s_selected_continue_index = (uint8_t)cell_index->row;
+  if (s_game_action_menu_layer) {
+    menu_layer_reload_data(s_game_action_menu_layer);
+  }
+  window_stack_push(s_game_action_window, true);
 }
 
 static void prv_main_menu_window_load(Window *window) {
@@ -1632,6 +2245,19 @@ static void prv_init(void) {
     .load = prv_settings_window_load,
     .unload = prv_settings_window_unload,
   });
+
+  s_game_action_window = window_create();
+  window_set_window_handlers(s_game_action_window, (WindowHandlers) {
+    .load = prv_game_action_window_load,
+    .unload = prv_game_action_window_unload,
+  });
+
+  s_replay_window = window_create();
+  window_set_click_config_provider(s_replay_window, prv_replay_click_config_provider);
+  window_set_window_handlers(s_replay_window, (WindowHandlers) {
+    .load = prv_replay_window_load,
+    .unload = prv_replay_window_unload,
+  });
   
   s_game_window = window_create();
   window_set_click_config_provider(s_game_window, prv_click_config_provider);
@@ -1648,7 +2274,10 @@ static void prv_init(void) {
 }
 
 static void prv_deinit(void) {
+  replay_cancel_timer();
   window_destroy(s_game_window);
+  window_destroy(s_replay_window);
+  window_destroy(s_game_action_window);
   window_destroy(s_settings_window);
   window_destroy(s_continue_menu_window);
   window_destroy(s_main_menu_window);
