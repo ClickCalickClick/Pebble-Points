@@ -1355,9 +1355,8 @@ static void game_store_save(void) {
 
 // Load slot-based persistence. Legacy save reset is acceptable for this release.
 static void game_store_load(void) {
-  replay_tracks_load();
-
   game_store_reset();
+  replay_tracks_load();
 
   GameStorageMeta meta = {0};
   status_t meta_ret = persist_read_data(STORE_META_KEY, &meta, sizeof(GameStorageMeta));
