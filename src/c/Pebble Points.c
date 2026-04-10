@@ -17,8 +17,9 @@
 // PHASE 1: Data Structures & Persistence Layer
 // ============================================================================
 
-// Storage key for persistent data
-#define STORAGE_KEY 1
+// Storage keys for persistent data
+#define STORE_META_KEY 100
+#define GAME_STORAGE_KEY_BASE 120
 
 #define MAX_PLAYERS 4
 #define MAX_SAVED_GAMES 3
@@ -62,17 +63,6 @@ typedef struct {
   uint8_t padding[2];  // Reserved for future use; ensures consistent struct size
 } GameSession;
 
-// Legacy persisted format used before multi-game support (for migration)
-typedef struct {
-  PlayerState players[MAX_PLAYERS];
-  int active_index;
-  int player_count;
-  uint32_t last_modified;
-  uint8_t enable_confetti;
-  uint8_t enable_haptics;
-  uint8_t padding[6];
-} LegacyGameSessionV1;
-
 // Persistent container for up to 3 games ordered newest -> oldest
 typedef struct {
   GameSession games[MAX_SAVED_GAMES];
@@ -80,6 +70,12 @@ typedef struct {
   uint8_t active_game_index;
   uint8_t padding[2];
 } GameStorage;
+
+typedef struct {
+  uint8_t game_count;
+  uint8_t active_game_index;
+  uint8_t padding[2];
+} GameStorageMeta;
 
 typedef struct {
   int32_t scores[MAX_PLAYERS];
@@ -781,7 +777,7 @@ static int score_step_normalize(int step) {
 }
 
 static int score_step_get(void) {
-  return score_step_normalize((int)s_store.padding[0]);
+  return score_step_normalize((int)s_game.padding[0]);
 }
 
 static bool haptics_enabled(void) {
@@ -812,8 +808,8 @@ static void haptics_double_pulse_if_enabled(void) {
 }
 
 static void score_step_set(int step) {
-  s_store.padding[0] = (uint8_t)score_step_normalize(step);
-  s_store.padding[1] = 0;
+  s_game.padding[0] = (uint8_t)score_step_normalize(step);
+  s_game.padding[1] = 0;
 }
 
 static const GameSession *display_session_get(void) {
@@ -822,6 +818,10 @@ static const GameSession *display_session_get(void) {
 
 static Layer *display_layer_get(void) {
   return s_replay_mode ? s_replay_layer : s_game_layer;
+}
+
+static uint32_t game_storage_key_for_slot(uint8_t slot_index) {
+  return (uint32_t)(GAME_STORAGE_KEY_BASE + slot_index);
 }
 
 static uint32_t replay_storage_key_for_slot(uint8_t slot_index) {
@@ -1311,16 +1311,18 @@ static void game_session_init_defaults(GameSession *session) {
   // Feature toggles: enabled by default
   session->enable_confetti = 1;
   session->enable_haptics = 1;
-  
-  memset(session->padding, 0, sizeof(session->padding));
+
+  // Per-game score step defaults to 1.
+  session->padding[0] = (uint8_t)SCORE_STEP_DEFAULT;
+  session->padding[1] = 0;
 }
 
 // Reset persisted store state
 static void game_store_reset(void) {
   memset(&s_store, 0, sizeof(s_store));
+  memset(&s_game, 0, sizeof(s_game));
   s_store.game_count = 0;
   s_store.active_game_index = 0;
-  score_step_set(SCORE_STEP_DEFAULT);
   for (uint8_t i = 0; i < MAX_SAVED_GAMES; i++) {
     replay_track_clear(&s_replay_tracks[i]);
   }
@@ -1328,64 +1330,94 @@ static void game_store_reset(void) {
 }
 
 static void game_store_save(void) {
-  persist_write_data(STORAGE_KEY, &s_store, sizeof(GameStorage));
+  GameStorageMeta meta = {0};
+  meta.game_count = s_store.game_count;
+  meta.active_game_index = s_store.active_game_index;
+
+  int meta_write_result = persist_write_data(STORE_META_KEY, &meta, sizeof(GameStorageMeta));
+  if (meta_write_result != sizeof(GameStorageMeta)) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to save game meta, code=%d", meta_write_result);
+  }
+
+  for (uint8_t i = 0; i < MAX_SAVED_GAMES; i++) {
+    uint32_t key = game_storage_key_for_slot(i);
+
+    if (i < s_store.game_count) {
+      int game_write_result = persist_write_data(key, &s_store.games[i], sizeof(GameSession));
+      if (game_write_result != sizeof(GameSession)) {
+        APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to save game slot %d, code=%d", i, game_write_result);
+      }
+    } else if (persist_exists(key)) {
+      persist_delete(key);
+    }
+  }
 }
 
-// Load store from persistence; migrates legacy single-session data when present
+// Load slot-based persistence. Legacy save reset is acceptable for this release.
 static void game_store_load(void) {
   replay_tracks_load();
 
-  status_t ret = persist_read_data(STORAGE_KEY, &s_store, sizeof(GameStorage));
-  if (ret == sizeof(GameStorage) && s_store.game_count <= MAX_SAVED_GAMES) {
-    score_step_set(score_step_get());
+  game_store_reset();
 
-    if (s_store.game_count == 0) {
-      s_active_game_index = -1;
-      replay_tracks_sync_with_store();
-      game_store_save();
-      return;
-    }
-
-    if (s_store.active_game_index >= s_store.game_count) {
-      s_store.active_game_index = 0;
-    }
-
-    s_active_game_index = s_store.active_game_index;
-    s_game = s_store.games[s_active_game_index];
+  GameStorageMeta meta = {0};
+  status_t meta_ret = persist_read_data(STORE_META_KEY, &meta, sizeof(GameStorageMeta));
+  if (meta_ret != sizeof(GameStorageMeta) || meta.game_count > MAX_SAVED_GAMES) {
     replay_tracks_sync_with_store();
     return;
   }
 
-  // Attempt migration from legacy single-session format.
-  LegacyGameSessionV1 legacy = {0};
-  ret = persist_read_data(STORAGE_KEY, &legacy, sizeof(LegacyGameSessionV1));
+  bool needs_resave = false;
+  uint8_t loaded_count = 0;
 
-  game_store_reset();
-
-  if (ret == sizeof(LegacyGameSessionV1)) {
-    GameSession migrated = {0};
-    memcpy(migrated.players, legacy.players, sizeof(legacy.players));
-    migrated.active_index = legacy.active_index;
-    migrated.player_count = legacy.player_count;
-    migrated.last_modified = legacy.last_modified;
-    migrated.created_at = legacy.last_modified ? legacy.last_modified : (uint32_t)time(NULL);
-    migrated.enable_confetti = legacy.enable_confetti;
-    migrated.enable_haptics = legacy.enable_haptics;
-    memset(migrated.padding, 0, sizeof(migrated.padding));
-
-    if (migrated.player_count < 2 || migrated.player_count > MAX_PLAYERS) {
-      game_session_init_defaults(&migrated);
+  for (uint8_t i = 0; i < meta.game_count; i++) {
+    GameSession loaded = {0};
+    status_t ret = persist_read_data(game_storage_key_for_slot(i), &loaded, sizeof(GameSession));
+    if (ret != sizeof(GameSession)) {
+      needs_resave = true;
+      continue;
     }
 
-    s_store.games[0] = migrated;
-    s_store.game_count = 1;
-    s_store.active_game_index = 0;
-    s_active_game_index = 0;
-    s_game = migrated;
-    game_store_save();
+    if (loaded.player_count < 2 || loaded.player_count > MAX_PLAYERS) {
+      needs_resave = true;
+      continue;
+    }
+
+    uint8_t normalized_score_step = (uint8_t)score_step_normalize((int)loaded.padding[0]);
+    if (loaded.padding[0] != normalized_score_step || loaded.padding[1] != 0) {
+      loaded.padding[0] = normalized_score_step;
+      loaded.padding[1] = 0;
+      needs_resave = true;
+    }
+
+    s_store.games[loaded_count++] = loaded;
   }
 
+  s_store.game_count = loaded_count;
+  if (s_store.game_count == 0) {
+    s_store.active_game_index = 0;
+    s_active_game_index = -1;
+    replay_tracks_sync_with_store();
+    if (needs_resave) {
+      game_store_save();
+    }
+    return;
+  }
+
+  if (meta.active_game_index >= s_store.game_count) {
+    s_store.active_game_index = 0;
+    needs_resave = true;
+  } else {
+    s_store.active_game_index = meta.active_game_index;
+  }
+
+  s_active_game_index = s_store.active_game_index;
+  s_game = s_store.games[s_active_game_index];
+
   replay_tracks_sync_with_store();
+
+  if (needs_resave) {
+    game_store_save();
+  }
 }
 
 static void game_store_promote_to_top(uint8_t index) {
@@ -1723,12 +1755,14 @@ static void settings_menu_select(MenuLayer *menu_layer, MenuIndex *cell_index, v
     return;
   }
 
+  game_store_ensure_active();
+
   int next_step = score_step_normalize((int)SCORE_STEP_OPTIONS[row]);
   int current_step = score_step_get();
 
   if (next_step != current_step) {
     score_step_set(next_step);
-    game_store_save();
+    game_session_save(&s_game);
     APP_LOG(APP_LOG_LEVEL_DEBUG, "Settings: score step set to %d", next_step);
   }
 
