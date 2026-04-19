@@ -1,9 +1,0 @@
-{
-    "enableConfetti": 10005,
-    "enableHaptics": 10006,
-    "player1Name": 10001,
-    "player2Name": 10002,
-    "player3Name": 10003,
-    "player4Name": 10004,
-    "playerCount": 10000
-}

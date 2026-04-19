@@ -1,6 +1,19 @@
+# Build artifacts
+build/
+
+# Waf lock files
 .lock-waf_darwin_build
-.lock-waf_darwin_build
-build/.lock-waf_darwin_build
+
+# IDE / Editor
 .vscode/c_cpp_properties.json
-build/config.log
-.lock-waf_darwin_build
+
+# Dependencies
+node_modules/
+
+# Environment / Secrets
+.env
+.env.*
+
+# OS junk
+.DS_Store
+Thumbs.db
